@@ -5,14 +5,14 @@ import { ChatMessage, StoredReport, KnowledgeDocument, WeeklyTip } from "../type
 
 /**
  * World-class Gemini SDK implementation optimized for high-speed executive performance.
- * Flash is used for high-concurrency tasks, Pro for deep audits.
+ * Flash is used for high-concurrency/real-time tasks, Pro for deep auditing.
  */
 const PRIMARY_MODEL = 'gemini-3-flash-preview';
 const PRO_MODEL = 'gemini-3-pro-preview';
 
 /**
  * Enhanced Retry Utility with Jitter and Exponential Backoff.
- * Aggressive retry logic to wait out transient "Intelligence Core" busy states.
+ * Aggressive retry logic to wait out transient "Intelligence Core" busy states (429/Quota).
  */
 async function withRetry<T>(fn: () => Promise<T>, retries = 8, delay = 3500): Promise<T> {
   try {
@@ -37,12 +37,12 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 8, delay = 3500): Pr
 }
 
 /**
- * Audit Log Intelligence Analysis
+ * Audit Log Intelligence Analysis (CEO level deep analysis)
  */
 export const analyzeReport = async (reportText: string, reportType: 'PATROL' | 'INCIDENT' | 'SHIFT' = 'SHIFT'): Promise<string> => {
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `AUDIT TYPE: ${reportType} REPORT.\n\nCONTENT TO ANALYZE:\n${reportText}\n\nINSTRUCTIONS:\nPerform deep audit for liability, safety, and operational gaps. Provide step-by-step directives for the CEO.`;
+    const prompt = `AUDIT TYPE: ${reportType} REPORT.\n\nCONTENT TO ANALYZE:\n${reportText}\n\nINSTRUCTIONS:\nAnalyze vulnerabilities, inconsistencies, and provide actionable CEO-level directives.`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRO_MODEL,
@@ -52,7 +52,7 @@ export const analyzeReport = async (reportText: string, reportType: 'PATROL' | '
         thinkingConfig: { thinkingBudget: 0 }
       }
     });
-    return response.text || "Analysis engine stabilization link active.";
+    return response.text || "Analysis engine recalibrating.";
   });
 };
 
@@ -63,7 +63,7 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    const prompt = `STRATEGIC NEWS BRIEF: Top 10 critical security manpower and industrial protection updates for ${today}.`;
+    const prompt = `URGENT CEO BRIEF: 10 Latest physical security manpower trends and regulatory updates for ${today}.`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
@@ -83,7 +83,7 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
       })) || [];
 
     return { 
-      text: response.text || "Intelligence stream recalibrating.",
+      text: response.text || "Intelligence stream temporarily offline.",
       sources: sources.length > 0 ? sources : undefined
     };
   });
@@ -91,7 +91,7 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
 
 /**
  * Streaming Executive Advisor with Search-to-Standard Fallback.
- * If Google Search hits quota, we fallback to standard Gemini intelligence.
+ * If Google Search hits quota repeatedly, we fallback to standard Gemini intelligence.
  */
 export const generateAdvisorStream = async (
   history: ChatMessage[], 
@@ -109,7 +109,8 @@ export const generateAdvisorStream = async (
         thinkingConfig: { thinkingBudget: 0 }
       };
 
-      // Fallback: If we've failed 3 times, disable search tool to bypass search-specific quota limits
+      // Fallback logic: If we've hit quota multiple times, search is likely the bottleneck.
+      // We disable it after 3 failures to ensure the user gets a model response.
       if (useSearch && retries > 5) {
         config.tools = [{ googleSearch: {} }];
       }
@@ -152,15 +153,15 @@ export const generateAdvisorStream = async (
 };
 
 /**
- * Streaming Global Trends / Best Practices (Max Resilience)
+ * Streaming Global Trends / Best Practices (Max Resilience Strategy)
  */
 export const fetchBestPracticesStream = async (
   topic: string | undefined,
   onChunk: (text: string) => void,
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
-  const finalTopic = topic && topic.trim() !== "" ? topic : "latest 2024-2025 security manpower trends and ISO 18788 industrial protection standards";
-  const prompt = `CEO INTELLIGENCE BRIEF: Analyze "${finalTopic}" for strategic impact on manpower operations.`;
+  const finalTopic = topic && topic.trim() !== "" ? topic : "latest 2024-2025 security manpower trends, ISO 18788 updates, and ASIS certifications";
+  const prompt = `CEO STRATEGIC INTELLIGENCE: Analyze global physical security trends for "${finalTopic}". Focus on operational efficiency and manpower supply.`;
 
   const startStream = async (retries = 8, delay = 4000, useSearch = true): Promise<void> => {
     try {
@@ -169,7 +170,7 @@ export const fetchBestPracticesStream = async (
         thinkingConfig: { thinkingBudget: 0 }
       };
       
-      // Fallback logic
+      // Fallback: If search tool is causing 429s, we eventually try without it to deliver results.
       if (useSearch && retries > 4) {
         config.tools = [{ googleSearch: {} }];
       }
@@ -193,7 +194,7 @@ export const fetchBestPracticesStream = async (
       onComplete(finalSources);
     } catch (error: any) {
       const errorStr = JSON.stringify(error).toUpperCase();
-      const isQuota = errorStr.includes('429') || errorStr.includes('QUOTA');
+      const isQuota = errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('RESOURCE_EXHAUSTED');
 
       if (isQuota && retries > 0) {
         const jitter = Math.random() * 2000;
@@ -217,7 +218,7 @@ export const generateTrainingModuleStream = async (
   onChunk: (text: string) => void,
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
-  const prompt = `Training Module: "${topic}" for ${role} (Week ${week}). Focus on high-fidelity tactical objectives.`;
+  const prompt = `Detailed security training brief: "${topic}". Role: ${role}. Week: ${week}. Focused on non-repetitive industrial tactical insights.`;
 
   const startStream = async (retries = 6, delay = 3500): Promise<void> => {
     try {

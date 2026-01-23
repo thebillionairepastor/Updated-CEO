@@ -262,8 +262,8 @@ function App() {
     } else {
       setApiError(`Communication Breach: ${error?.message || "Internal network instability."}`);
     }
-    // Auto-clear after a few seconds
-    setTimeout(() => setApiError(null), 8000);
+    // Auto-clear error after 10 seconds to keep UI clean
+    setTimeout(() => setApiError(null), 10000);
   };
 
   const handleSendMessage = async () => {
