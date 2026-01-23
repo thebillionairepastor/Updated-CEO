@@ -10,9 +10,9 @@ const PRIMARY_MODEL = 'gemini-3-flash-preview';
 const PRO_MODEL = 'gemini-3-pro-preview';
 
 /**
- * Robust Retry Utility with Optimized Backoff for Speed (Standard Requests)
+ * Optimized Retry Utility with Jitter and Exponential Backoff
  */
-async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 1500): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 5, delay = 2000): Promise<T> {
   try {
     return await fn();
   } catch (error: any) {
@@ -24,7 +24,9 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 1500): Pr
       errorString.includes('LIMIT');
 
     if (isQuotaError && retries > 0) {
-      await new Promise(resolve => setTimeout(resolve, delay));
+      // Add random jitter to prevent simultaneous retry bursts
+      const jitter = Math.random() * 1000;
+      await new Promise(resolve => setTimeout(resolve, delay + jitter));
       return withRetry(fn, retries - 1, delay * 2); 
     }
     throw error;
@@ -58,7 +60,7 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    const prompt = `LATEST NEWS: Global security trends and Nigerian security updates for ${today}. Focused on manpower and manpower technology.`;
+    const prompt = `LATEST NEWS: Strategic physical security trends, Nigerian NSCDC updates, and NIMASA maritime policy news for today ${today}.`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
@@ -85,7 +87,7 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
 };
 
 /**
- * Streaming Executive Advisor Interface with Built-in Quota Resilience
+ * Streaming Executive Advisor Interface with Enhanced Resilience
  */
 export const generateAdvisorStream = async (
   history: ChatMessage[], 
@@ -93,11 +95,11 @@ export const generateAdvisorStream = async (
   onChunk: (text: string) => void,
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const conversationContext = history.slice(-5).map(h => `${h.role.toUpperCase()}: ${h.text}`).join('\n');
   
-  const startStream = async (retries = 2): Promise<void> => {
+  const startStream = async (retries = 6, delay = 2000): Promise<void> => {
     try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const responseStream = await ai.models.generateContentStream({
         model: PRIMARY_MODEL,
         contents: `CONTEXT:\n${conversationContext}\n\nCEO QUERY: ${currentMessage}`,
@@ -129,8 +131,9 @@ export const generateAdvisorStream = async (
     } catch (error: any) {
       const errorStr = JSON.stringify(error).toUpperCase();
       if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('LIMIT'))) {
-        await new Promise(r => setTimeout(r, 2000));
-        return startStream(retries - 1);
+        const jitter = Math.random() * 1000;
+        await new Promise(r => setTimeout(r, delay + jitter));
+        return startStream(retries - 1, delay * 2);
       }
       throw error;
     }
@@ -149,11 +152,11 @@ export const generateTrainingModuleStream = async (
   onChunk: (text: string) => void,
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = `Detailed security training brief for: "${topic}". Context: Nigeria/Global Industrial Security. Role: ${role}. Week: ${week}.`;
+  const prompt = `Develop a non-repetitive security training brief on "${topic}" for ${role} (Week ${week}). Focused on Nigerian industrial sector risks.`;
 
-  const startStream = async (retries = 2): Promise<void> => {
+  const startStream = async (retries = 6, delay = 2000): Promise<void> => {
     try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const responseStream = await ai.models.generateContentStream({
         model: PRIMARY_MODEL,
         contents: prompt,
@@ -178,8 +181,9 @@ export const generateTrainingModuleStream = async (
     } catch (error: any) {
       const errorStr = JSON.stringify(error).toUpperCase();
       if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA'))) {
-        await new Promise(r => setTimeout(r, 2000));
-        return startStream(retries - 1);
+        const jitter = Math.random() * 1000;
+        await new Promise(r => setTimeout(r, delay + jitter));
+        return startStream(retries - 1, delay * 2);
       }
       throw error;
     }
@@ -196,12 +200,12 @@ export const fetchBestPracticesStream = async (
   onChunk: (text: string) => void,
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const finalTopic = topic && topic.trim() !== "" ? topic : "latest physical security global best practices 2024 2025";
-  const prompt = `CEO Strategic Intel: "${finalTopic}". Include ISO 18788 and Nigerian NSCDC standards.`;
+  const finalTopic = topic && topic.trim() !== "" ? topic : "latest 2024-2025 global physical security manpower trends and ISO standards";
+  const prompt = `CEO STRATEGIC INTELLIGENCE BRIEF: Analyze current shifts and standards for "${finalTopic}". Include impact on security manpower industry.`;
 
-  const startStream = async (retries = 2): Promise<void> => {
+  const startStream = async (retries = 6, delay = 2500): Promise<void> => {
     try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const responseStream = await ai.models.generateContentStream({
         model: PRIMARY_MODEL,
         contents: prompt,
@@ -225,8 +229,9 @@ export const fetchBestPracticesStream = async (
     } catch (error: any) {
       const errorStr = JSON.stringify(error).toUpperCase();
       if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA'))) {
-        await new Promise(r => setTimeout(r, 2000));
-        return startStream(retries - 1);
+        const jitter = Math.random() * 1000;
+        await new Promise(r => setTimeout(r, delay + jitter));
+        return startStream(retries - 1, delay * 2.5);
       }
       throw error;
     }
@@ -243,13 +248,13 @@ export const generateWeeklyTip = async (previousTips: WeeklyTip[]): Promise<stri
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: `Generate a unique Weekly Strategic Focus. Do not repeat topics like ${previousTips.slice(0, 3).map(t => t.topic).join(', ')}.`,
+      contents: `Generate a new Weekly Strategic Focus. Do not repeat: ${previousTips.slice(0, 5).map(t => t.topic).join(', ')}.`,
       config: { 
         systemInstruction: SYSTEM_INSTRUCTION_WEEKLY_TIP,
         thinkingConfig: { thinkingBudget: 0 }
       }
     });
-    return response.text || "Remain alert and maintain perimeter integrity.";
+    return response.text || "Maintain absolute perimeter integrity.";
   });
 };
 
@@ -258,7 +263,7 @@ export const fetchTopicSuggestions = async (query: string): Promise<string[]> =>
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: `Generate 6 variations of professional training topics for: "${query}". Return as JSON string array.`,
+      contents: `Provide 6 specialized training topic suggestions for: "${query}". Format as JSON string array.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -275,9 +280,9 @@ export const analyzePatrolPatterns = async (reports: StoredReport[]): Promise<st
     const context = reports.map(r => r.content).slice(0, 10).join('\n---\n');
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRO_MODEL,
-      contents: `Analyze patrol logs for timing anomalies and route optimization:\n\n${context}`,
+      contents: `Audit these patrol reports for efficiency and anomalies:\n\n${context}`,
       config: { thinkingConfig: { thinkingBudget: 0 } }
     });
-    return response.text || "Patrol engine recalibrating.";
+    return response.text || "Patrol intelligence analysis complete.";
   });
 };
