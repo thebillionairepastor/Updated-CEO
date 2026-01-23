@@ -5,15 +5,14 @@ import { ChatMessage, StoredReport, KnowledgeDocument, WeeklyTip } from "../type
 
 /**
  * World-class Gemini SDK implementation optimized for high-speed executive performance.
- * Model Selection: 'gemini-3-flash-preview' is the definitive choice for speed.
  */
 const PRIMARY_MODEL = 'gemini-3-flash-preview';
 const PRO_MODEL = 'gemini-3-pro-preview';
 
 /**
- * Robust Retry Utility with Exponential Backoff
+ * Robust Retry Utility with Optimized Backoff for Speed (Standard Requests)
  */
-async function withRetry<T>(fn: () => Promise<T>, retries = 5, delay = 5000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 1500): Promise<T> {
   try {
     return await fn();
   } catch (error: any) {
@@ -25,30 +24,27 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 5, delay = 5000): Pr
       errorString.includes('LIMIT');
 
     if (isQuotaError && retries > 0) {
-      console.warn(`[AntiRisk Vault] Intelligence link saturated. Re-establishing link in ${delay}ms... (${retries} attempts remaining)`);
       await new Promise(resolve => setTimeout(resolve, delay));
-      return withRetry(fn, retries - 1, delay * 1.5); 
+      return withRetry(fn, retries - 1, delay * 2); 
     }
-    
-    console.error("[AntiRisk Vault] Fatal Intelligence Failure:", error);
     throw error;
   }
 }
 
 /**
  * Audit Log Intelligence Analysis
- * Enhanced to handle Daily Patrols and 5Ws Incident Reports with prescriptive advice.
  */
 export const analyzeReport = async (reportText: string, reportType: 'PATROL' | 'INCIDENT' | 'SHIFT' = 'SHIFT'): Promise<string> => {
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `AUDIT TYPE: ${reportType} REPORT.\n\nCONTENT TO ANALYZE:\n${reportText}\n\nINSTRUCTIONS:\n1. Identify critical vulnerabilities and tactical gaps.\n2. Detect temporal or narrative inconsistencies (Pencil-whipping detection).\n3. IMPORTANT: Advise exactly WHAT should be done and HOW to do it using best practical acceptable practices (ISO 18788/ASIS).\n4. Format as a CEO Executive Brief.`;
+    const prompt = `AUDIT TYPE: ${reportType} REPORT.\n\nCONTENT TO ANALYZE:\n${reportText}\n\nINSTRUCTIONS:\n1. Identify critical vulnerabilities and tactical gaps.\n2. Detect temporal or narrative inconsistencies.\n3. Advise exactly WHAT should be done and HOW to do it.\n4. Format as a CEO Executive Brief.`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
-      model: PRO_MODEL, // Use PRO for deeper reasoning and inconsistency detection
+      model: PRO_MODEL,
       contents: prompt,
       config: {
-        systemInstruction: SYSTEM_INSTRUCTION_AUDIT_INTELLIGENCE
+        systemInstruction: SYSTEM_INSTRUCTION_AUDIT_INTELLIGENCE,
+        thinkingConfig: { thinkingBudget: 0 }
       }
     });
     return response.text || "Analysis engine recalibrating.";
@@ -62,15 +58,15 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    const prompt = `Generate the absolute Latest CEO Security News Blog for today, ${today}.
-    Exactly 10 items. Focus on NSCDC, NIMASA, and ISO regulatory impacts.`;
+    const prompt = `LATEST NEWS: Global security trends and Nigerian security updates for ${today}. Focused on manpower and manpower technology.`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
       contents: prompt,
       config: {
         systemInstruction: SYSTEM_INSTRUCTION_NEWS,
-        tools: [{ googleSearch: {} }]
+        tools: [{ googleSearch: {} }],
+        thinkingConfig: { thinkingBudget: 0 }
       }
     });
 
@@ -89,72 +85,154 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
 };
 
 /**
- * Topic Suggestion Engine
+ * Streaming Executive Advisor Interface with Built-in Quota Resilience
  */
-export const fetchTopicSuggestions = async (query: string): Promise<string[]> => {
-  return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `Generate 6 professional, specific security training topic variants for an industrial CEO vault based on: "${query}". 
-    Focus on risk mitigation, liability reduction, and tactical guard deployment.
-    Return ONLY a JSON array of strings.`;
-
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING }
-        }
-      }
-    });
-
+export const generateAdvisorStream = async (
+  history: ChatMessage[], 
+  currentMessage: string,
+  onChunk: (text: string) => void,
+  onComplete: (sources?: Array<{ title: string; url: string }>) => void
+) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const conversationContext = history.slice(-5).map(h => `${h.role.toUpperCase()}: ${h.text}`).join('\n');
+  
+  const startStream = async (retries = 2): Promise<void> => {
     try {
-      return JSON.parse(response.text || "[]");
-    } catch (e) {
-      return [];
+      const responseStream = await ai.models.generateContentStream({
+        model: PRIMARY_MODEL,
+        contents: `CONTEXT:\n${conversationContext}\n\nCEO QUERY: ${currentMessage}`,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION_ADVISOR,
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      });
+
+      let fullText = "";
+      let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
+
+      for await (const chunk of responseStream) {
+        const chunkText = chunk.text || "";
+        fullText += chunkText;
+        onChunk(fullText);
+
+        const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
+          ?.filter((c: any) => c.web?.uri)
+          .map((c: any) => ({
+            title: c.web.title,
+            url: c.web.uri
+          }));
+
+        if (sources && sources.length > 0) finalSources = sources;
+      }
+      onComplete(finalSources);
+    } catch (error: any) {
+      const errorStr = JSON.stringify(error).toUpperCase();
+      if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('LIMIT'))) {
+        await new Promise(r => setTimeout(r, 2000));
+        return startStream(retries - 1);
+      }
+      throw error;
     }
-  });
+  };
+
+  return startStream();
 };
 
 /**
- * Tactical Training Module Generator
+ * Streaming Tactical Training Module Generator
  */
-export const generateTrainingModule = async (topic: string, week: number = 1, role: string = "All Roles"): Promise<{ text: string; sources?: Array<{ title: string; url: string }> }> => {
-  return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
-    const weekFocus = {
-      1: "FUNDAMENTALS: Core principles and basic observation.",
-      2: "OPERATIONAL: Practical application and routine checks.",
-      3: "TACTICAL: Emergency response and decision making.",
-      4: "MASTERY: Leadership and pattern detection."
-    }[week] || "GENERAL REFRESHER";
+export const generateTrainingModuleStream = async (
+  topic: string, 
+  week: number = 1, 
+  role: string = "All Roles",
+  onChunk: (text: string) => void,
+  onComplete: (sources?: Array<{ title: string; url: string }>) => void
+) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const prompt = `Detailed security training brief for: "${topic}". Context: Nigeria/Global Industrial Security. Role: ${role}. Week: ${week}.`;
 
-    const prompt = `Generate a high-fidelity training "vibration" for: "${topic}". Week ${week} focus: ${weekFocus}. Role: ${role}. Include mandatory CEO/MD signature.`;
+  const startStream = async (retries = 2): Promise<void> => {
+    try {
+      const responseStream = await ai.models.generateContentStream({
+        model: PRIMARY_MODEL,
+        contents: prompt,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION_TRAINER,
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      });
 
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: prompt,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION_TRAINER,
-        tools: [{ googleSearch: {} }]
+      let fullText = "";
+      let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
+
+      for await (const chunk of responseStream) {
+        fullText += chunk.text || "";
+        onChunk(fullText);
+        const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
+          ?.filter((c: any) => c.web?.uri).map((c: any) => ({ title: c.web.title, url: c.web.uri }));
+        if (sources && sources.length > 0) finalSources = sources;
       }
-    });
+      onComplete(finalSources);
+    } catch (error: any) {
+      const errorStr = JSON.stringify(error).toUpperCase();
+      if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA'))) {
+        await new Promise(r => setTimeout(r, 2000));
+        return startStream(retries - 1);
+      }
+      throw error;
+    }
+  };
 
-    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-      ?.filter((chunk: any) => chunk.web?.uri)
-      .map((chunk: any) => ({
-        title: chunk.web.title,
-        url: chunk.web.uri
-      })) || [];
+  return startStream();
+};
 
-    return { 
-      text: response.text || "Tactical brief generation failed.",
-      sources: sources.length > 0 ? sources : undefined
-    };
-  });
+/**
+ * Streaming Global Trends / Best Practices Interface
+ */
+export const fetchBestPracticesStream = async (
+  topic: string | undefined,
+  onChunk: (text: string) => void,
+  onComplete: (sources?: Array<{ title: string; url: string }>) => void
+) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const finalTopic = topic && topic.trim() !== "" ? topic : "latest physical security global best practices 2024 2025";
+  const prompt = `CEO Strategic Intel: "${finalTopic}". Include ISO 18788 and Nigerian NSCDC standards.`;
+
+  const startStream = async (retries = 2): Promise<void> => {
+    try {
+      const responseStream = await ai.models.generateContentStream({
+        model: PRIMARY_MODEL,
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      });
+
+      let fullText = "";
+      let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
+
+      for await (const chunk of responseStream) {
+        fullText += chunk.text || "";
+        onChunk(fullText);
+        const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
+          ?.filter((c: any) => c.web?.uri).map((c: any) => ({ title: c.web.title, url: c.web.uri }));
+        if (sources && sources.length > 0) finalSources = sources;
+      }
+      onComplete(finalSources);
+    } catch (error: any) {
+      const errorStr = JSON.stringify(error).toUpperCase();
+      if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA'))) {
+        await new Promise(r => setTimeout(r, 2000));
+        return startStream(retries - 1);
+      }
+      throw error;
+    }
+  };
+
+  return startStream();
 };
 
 /**
@@ -163,110 +241,43 @@ export const generateTrainingModule = async (topic: string, week: number = 1, ro
 export const generateWeeklyTip = async (previousTips: WeeklyTip[]): Promise<string> => {
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `Generate a new "Weekly Strategic Focus" directive based on current high-level risks.`;
-
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: prompt,
+      contents: `Generate a unique Weekly Strategic Focus. Do not repeat topics like ${previousTips.slice(0, 3).map(t => t.topic).join(', ')}.`,
       config: { 
-        systemInstruction: SYSTEM_INSTRUCTION_WEEKLY_TIP
+        systemInstruction: SYSTEM_INSTRUCTION_WEEKLY_TIP,
+        thinkingConfig: { thinkingBudget: 0 }
       }
     });
     return response.text || "Remain alert and maintain perimeter integrity.";
   });
 };
 
-/**
- * Executive Advisor Interface
- */
-export const generateAdvisorResponse = async (
-  history: ChatMessage[], 
-  currentMessage: string,
-  knowledgeBase: KnowledgeDocument[] = []
-): Promise<{ text: string; sources?: Array<{ title: string; url: string }> }> => {
+export const fetchTopicSuggestions = async (query: string): Promise<string[]> => {
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const conversationContext = history.slice(-5).map(h => `${h.role.toUpperCase()}: ${h.text}`).join('\n');
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: `CONTEXT:\n${conversationContext}\n\nCEO QUERY: ${currentMessage}`,
+      contents: `Generate 6 variations of professional training topics for: "${query}". Return as JSON string array.`,
       config: {
-        systemInstruction: SYSTEM_INSTRUCTION_ADVISOR,
-        tools: [{ googleSearch: {} }]
+        responseMimeType: "application/json",
+        responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } },
+        thinkingConfig: { thinkingBudget: 0 }
       }
     });
-
-    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-      ?.filter((chunk: any) => chunk.web?.uri)
-      .map((chunk: any) => ({
-        title: chunk.web.title,
-        url: chunk.web.uri
-      })) || [];
-
-    return { 
-      text: response.text || "Vault link recalibrating.",
-      sources: sources.length > 0 ? sources : undefined
-    };
+    try { return JSON.parse(response.text || "[]"); } catch { return []; }
   });
 };
 
-/**
- * Best Practices Retrieval
- */
-export const fetchBestPractices = async (topic?: string): Promise<{ text: string; sources?: Array<{ title: string; url: string }> }> => {
-  return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    const finalTopic = topic && topic.trim() !== "" ? topic : "latest physical security best practices as of " + today;
-
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: `Audit Intelligence: "${finalTopic}". Focus on May 2025 updates.`,
-      config: { 
-        tools: [{ googleSearch: {} }]
-      },
-    });
-
-    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-      ?.filter((chunk: any) => chunk.web?.uri)
-      .map((chunk: any) => ({
-        title: chunk.web.title,
-        url: chunk.web.uri
-      })) || [];
-
-    return { 
-      text: response.text || "Intelligence stream saturated.",
-      sources: sources.length > 0 ? sources : undefined
-    };
-  });
-};
-
-/**
- * Patrol Route Optimization Analysis
- */
 export const analyzePatrolPatterns = async (reports: StoredReport[]): Promise<string> => {
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const context = reports.map(r => r.content).slice(0, 10).join('\n---\n');
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRO_MODEL,
-      contents: `Analyze these reports and suggest optimized routes:\n\n${context}`
+      contents: `Analyze patrol logs for timing anomalies and route optimization:\n\n${context}`,
+      config: { thinkingConfig: { thinkingBudget: 0 } }
     });
     return response.text || "Patrol engine recalibrating.";
-  });
-};
-
-/**
- * Automated Training Suggestions from Data
- */
-export const getTrainingSuggestions = async (recentReports: StoredReport[]): Promise<string[]> => {
-  return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const context = recentReports.map(r => `- ${r.content}`).join('\n');
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: `Suggest 3 training topics based on these incidents, separated by |||:\n${context}`
-    });
-    return (response.text || "").split('|||').map(t => t.trim());
   });
 };

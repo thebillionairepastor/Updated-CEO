@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Menu, Send, Plus, Search, RefreshCw, Download, FileText, ChevronRight, ShieldAlert, BookOpen, Globe, Briefcase, Calendar, ChevronLeft, Save, Trash2, Check, Lightbulb, Printer, Settings as SettingsIcon, MessageCircle, Mail, X, Bell, Database, Upload, Pin, PinOff, BarChart2, Sparkles, Copy, Lock, ShieldCheck, Fingerprint, Eye, Paperclip, XCircle, Bookmark, BookmarkCheck, LayoutGrid, ListFilter, Wand2, Map, ExternalLink, ImageIcon, Target, User, Phone, FileUp, Key, AlertTriangle, EyeIcon, CloudDownload, WifiOff, Newspaper, Zap, Activity } from 'lucide-react';
 import Navigation from './components/Navigation.tsx';
@@ -6,7 +7,7 @@ import ShareButton from './components/ShareButton.tsx';
 import IncidentChart from './components/IncidentChart.tsx';
 import { View, ChatMessage, Template, SecurityRole, StoredReport, WeeklyTip, UserProfile, KnowledgeDocument, SavedTrend, StoredTrainingModule, NewsItem } from './types.ts';
 import { STATIC_TEMPLATES, SECURITY_TRAINING_DB } from './constants.ts';
-import { generateAdvisorResponse, generateTrainingModule, analyzeReport, fetchBestPractices, generateWeeklyTip, getTrainingSuggestions, fetchTopicSuggestions, fetchSecurityNews, analyzePatrolPatterns } from './services/geminiService.ts';
+import { generateTrainingModuleStream, analyzeReport, fetchBestPracticesStream, generateWeeklyTip, fetchTopicSuggestions, fetchSecurityNews, analyzePatrolPatterns, generateAdvisorStream } from './services/geminiService.ts';
 
 // --- Offline Storage Service (IndexedDB) ---
 const DB_NAME = 'AntiRiskOfflineVault';
@@ -254,11 +255,11 @@ function App() {
 
   const handleError = (error: any) => {
     const errorStr = JSON.stringify(error).toUpperCase();
-    const isQuota = errorStr.includes('RESOURCE_EXHAUSTED') || errorStr.includes('QUOTA') || errorStr.includes('429') || errorStr.includes('LIMIT');
+    const isQuota = errorStr.includes('RESOURCE_EXHAUSTED') || errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('LIMIT');
     if (isQuota) {
-      setApiError("Intelligence Core is under high load. Stabilization link active. Please wait...");
+      setApiError("Intelligence Core is experiencing peak demand. Security protocols are retrying connection. Please maintain standby.");
     } else {
-      setApiError(`Communication Breach: ${error?.message || "Internal failure."}`);
+      setApiError(`Communication Breach: ${error?.message || "Internal network instability."}`);
     }
   };
 
@@ -266,14 +267,32 @@ function App() {
     if (!inputMessage.trim() || isOfflineMode) return;
     setApiError(null);
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text: inputMessage, timestamp: Date.now() };
-    setMessages(prev => [...prev, userMsg]);
+    const tempId = Date.now().toString() + 'ai';
+    const initialAiMsg: ChatMessage = { id: tempId, role: 'model', text: '', timestamp: Date.now(), isPinned: false };
+    
+    setMessages(prev => [...prev, userMsg, initialAiMsg]);
+    const currentInput = inputMessage;
     setInputMessage('');
     setIsAdvisorThinking(true);
+
     try {
-      const response = await generateAdvisorResponse(messages, inputMessage, knowledgeBase);
-      const aiMsg: ChatMessage = { id: Date.now().toString() + 'ai', role: 'model', text: response.text, timestamp: Date.now(), isPinned: false, sources: response.sources };
-      setMessages(prev => [...prev, aiMsg]);
-    } catch (err: any) { handleError(err); } finally { setIsAdvisorThinking(false); }
+      await generateAdvisorStream(
+        messages, 
+        currentInput,
+        (streamedText) => {
+          setIsAdvisorThinking(false);
+          setMessages(prev => prev.map(msg => msg.id === tempId ? { ...msg, text: streamedText } : msg));
+        },
+        (sources) => {
+          setMessages(prev => prev.map(msg => msg.id === tempId ? { ...msg, sources } : msg));
+        }
+      );
+    } catch (err: any) { 
+      handleError(err);
+      setMessages(prev => prev.filter(msg => msg.id !== tempId));
+    } finally { 
+      setIsAdvisorThinking(false); 
+    }
   };
 
   const togglePinMessage = (messageId: string) => {
@@ -302,21 +321,35 @@ function App() {
 
   const handleGenerateTraining = async () => {
     if (!trainingTopic || isOfflineMode) return;
-    setApiError(null); setIsTrainingLoading(true); setTrainingSources(undefined);
+    setApiError(null); 
+    setIsTrainingLoading(true); 
+    setTrainingContent('');
+    setTrainingSources(undefined);
     setShowTrainingSuggestions(false);
+    
     try {
-      const result = await generateTrainingModule(trainingTopic, trainingWeek, trainingRole);
-      setTrainingContent(result.text);
-      setTrainingSources(result.sources);
+      await generateTrainingModuleStream(
+        trainingTopic, 
+        trainingWeek, 
+        trainingRole,
+        (text) => setTrainingContent(text),
+        (sources) => setTrainingSources(sources)
+      );
     } catch (err: any) { handleError(err); } finally { setIsTrainingLoading(false); }
   };
 
   const handleFetchBP = async () => {
     if (isOfflineMode) return;
-    setApiError(null); setIsBpLoading(true);
+    setApiError(null); 
+    setIsBpLoading(true);
+    setBpContent({ text: '', sources: undefined });
+
     try {
-      const result = await fetchBestPractices(bpTopic);
-      setBpContent(result);
+      await fetchBestPracticesStream(
+        bpTopic,
+        (text) => setBpContent(prev => ({ ...prev!, text })),
+        (sources) => setBpContent(prev => ({ ...prev!, sources }))
+      );
     } catch (err: any) { handleError(err); } finally { setIsBpLoading(false); }
   };
 
@@ -581,6 +614,12 @@ function App() {
           <div className="p-5 bg-slate-900/40 border-b border-slate-700/50 flex justify-between items-center"><h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-3"><ShieldCheck className="text-blue-400" /> Operational Brief</h3>{trainingContent && <ShareButton content={trainingContent} title={`${trainingTopic} - Week ${trainingWeek}`} />}</div>
           <div className="flex-1 p-5 sm:p-8 overflow-y-auto bg-slate-900/10 scrollbar-hide">
             {trainingContent ? <MarkdownRenderer content={trainingContent} /> : <div className="h-full flex flex-col items-center justify-center opacity-30 italic text-center gap-4 py-12"><Target size={60} /><p className="text-sm sm:text-lg">Audit the 10M+ Database to generate briefings.</p></div>}
+            {isTrainingLoading && !trainingContent && (
+               <div className="flex flex-col items-center justify-center h-full py-12 gap-4 animate-pulse">
+                 <RefreshCw className="text-blue-500 animate-spin" size={32} />
+                 <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Engaging Vault Core...</p>
+               </div>
+            )}
           </div>
         </div>
       </div>
@@ -600,9 +639,9 @@ function App() {
         </div>
       </div>
       <div className="bg-[#1b2537] rounded-[2rem] sm:rounded-[2.5rem] border border-slate-700/50 overflow-hidden shadow-xl min-h-[300px] flex flex-col">
-        {isBpLoading ? (
+        {isBpLoading && !bpContent?.text ? (
           <div className="flex-1 flex flex-col items-center justify-center py-20 gap-4 opacity-50"><RefreshCw className="text-blue-400 animate-spin" size={36} /><p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Querying Vault...</p></div>
-        ) : bpContent ? (
+        ) : bpContent?.text ? (
           <div className="p-6 sm:p-10">
             <div className="flex justify-end mb-4"><ShareButton content={bpContent.text} title="Global Trend Brief" /></div>
             <MarkdownRenderer content={bpContent.text} />
@@ -629,8 +668,16 @@ function App() {
             {messages.map(msg => (
               <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                 <div className={`group relative max-w-[90%] sm:max-w-[85%] p-4 sm:p-5 rounded-2xl ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-slate-800 text-slate-100 rounded-bl-none border border-slate-700 shadow-sm'}`}>
-                  {msg.role === 'model' && <button onClick={() => togglePinMessage(msg.id)} className={`absolute -right-7 sm:-right-8 top-0 p-2 transition-all ${msg.isPinned ? 'text-yellow-400' : 'text-slate-600 sm:opacity-0 sm:group-hover:opacity-100'}`}>{msg.isPinned ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}</button>}
-                  <MarkdownRenderer content={msg.text} />
+                  {msg.role === 'model' && msg.text && <button onClick={() => togglePinMessage(msg.id)} className={`absolute -right-7 sm:-right-8 top-0 p-2 transition-all ${msg.isPinned ? 'text-yellow-400' : 'text-slate-600 sm:opacity-0 sm:group-hover:opacity-100'}`}>{msg.isPinned ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}</button>}
+                  {msg.role === 'model' && !msg.text ? (
+                     <div className="flex gap-1.5 py-2">
+                       <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></div>
+                       <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce delay-100"></div>
+                       <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce delay-200"></div>
+                     </div>
+                  ) : (
+                    <MarkdownRenderer content={msg.text} />
+                  )}
                 </div>
               </div>
             ))}
@@ -703,13 +750,11 @@ function App() {
                  <div className="text-center sm:text-left"><h2 className="text-xl sm:text-3xl font-black text-white mb-1">Directives</h2><p className="text-slate-400 text-xs sm:text-sm font-medium">Strategic briefings.</p></div>
                  <button onClick={handleGenerateWeeklyTip} disabled={isTipLoading} className="w-full sm:w-auto bg-yellow-600 hover:bg-yellow-700 px-6 py-3 rounded-xl sm:rounded-2xl font-bold text-white shadow-xl flex items-center justify-center gap-2 transition-all"><Plus size={18}/> New Directive</button>
                </div>
-               {/* Fixed: Changed overflow-hidden to allow ShareButton dropdown to be visible */}
                <div className="flex-1 overflow-y-auto bg-slate-800/40 rounded-[2rem] sm:rounded-[3rem] border border-slate-700/50 shadow-inner scrollbar-hide flex flex-col">
                  {weeklyTips[0] ? (
                     <div className="flex-1 flex flex-col">
                       <div className="p-4 sm:p-6 bg-slate-900/40 border-b border-slate-700/50 flex justify-between items-center sticky top-0 z-10">
                         <h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-3"><Lightbulb className="text-yellow-400" /> Strategic Focus</h3>
-                        {/* Fixed: Passed view and id to enable deep link sharing */}
                         <ShareButton 
                           content={weeklyTips[0].content} 
                           title={weeklyTips[0].topic} 
@@ -818,7 +863,6 @@ function App() {
         {showKbModal && <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/95 backdrop-blur-md p-4 animate-in fade-in"><div className="bg-[#1b2537] rounded-3xl border border-slate-700/50 p-6 sm:p-10 w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto flex flex-col"><div className="flex justify-between items-center mb-6 sm:mb-10"><h2 className="text-xl sm:text-3xl font-black text-white flex items-center gap-3"><Database size={24} className="text-blue-400" /> Archive</h2><button onClick={() => setShowKbModal(false)} className="p-2 text-slate-500 hover:text-white transition-colors"><X size={24}/></button></div><div className="space-y-4 sm:space-y-6"><input value={newDocTitle} onChange={(e) => setNewDocTitle(e.target.value)} placeholder="Directive Title..." className="w-full bg-slate-900/50 border border-slate-700/50 p-4 rounded-xl outline-none text-white focus:border-blue-500 text-base sm:text-lg font-bold" /><textarea value={newDocContent} onChange={(e) => setNewDocContent(e.target.value)} placeholder="Content..." className="w-full bg-slate-900/50 border border-slate-700/50 p-4 sm:p-6 rounded-xl h-48 sm:h-64 outline-none resize-none text-white focus:border-blue-500 text-sm sm:text-lg" /><button onClick={handleAddKbDocument} className="w-full bg-emerald-600 hover:bg-emerald-700 py-3 sm:py-5 rounded-xl sm:rounded-2xl font-bold text-base sm:text-xl active:scale-95 transition-all text-white">Ingest to Vault</button></div></div></div>}
         {showSopModal && <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/95 backdrop-blur-md p-4 animate-in fade-in"><div className="bg-[#1b2537] rounded-3xl border border-slate-700/50 p-6 sm:p-10 w-full max-w-2xl shadow-2xl overflow-y-auto max-h-[90vh]"><div className="flex justify-between items-center mb-6 sm:mb-8"><h2 className="text-xl sm:text-3xl font-black text-white flex items-center gap-3"><Briefcase size={24} className="text-blue-400" /> SOP Ingest</h2><button onClick={() => setShowSopModal(false)} className="p-2 text-slate-500 hover:text-white"><X size={24}/></button></div><div className="space-y-4 sm:space-y-6"><button onClick={() => fileInputRef.current?.click()} className="w-full flex flex-col items-center gap-2 p-6 border-2 border-dashed border-slate-700 rounded-2xl bg-slate-900/40 hover:border-blue-500/50 text-slate-400"><FileUp size={32} /><span className="text-[10px] font-bold uppercase tracking-widest">Select Schema</span><input ref={fileInputRef} type="file" accept=".txt,.md" className="hidden" onChange={handleFileUpload} /></button><div className="space-y-4"><input value={newSopTitle} onChange={(e) => setNewSopTitle(e.target.value)} placeholder="Title..." className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-blue-500 text-sm font-bold" /><textarea value={newSopContent} onChange={(e) => setNewSopContent(e.target.value)} placeholder="Full content..." className="w-full bg-slate-900/50 border border-slate-700 p-4 rounded-xl h-40 outline-none resize-none text-white focus:border-blue-500 text-sm" /></div><button onClick={handleAddCustomSop} disabled={!newSopTitle || !newSopContent} className="w-full bg-blue-600 py-4 rounded-xl sm:rounded-2xl font-bold text-base sm:text-xl shadow-xl text-white">Secure to Vault</button></div></div></div>}
         {showSettings && <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/95 backdrop-blur-md p-4 animate-in fade-in"><div className="bg-[#1b2537] rounded-3xl border border-slate-700/50 p-6 sm:p-10 w-full max-w-xl shadow-2xl overflow-y-auto max-h-[95vh]"><div className="flex justify-between items-center mb-6 sm:mb-8"><h2 className="text-xl font-black text-white flex items-center gap-3"><User size={24} className="text-blue-400" /> CEO Profile</h2><button onClick={() => setShowSettings(false)} className="p-2 text-slate-500 hover:text-white transition-colors"><X size={24}/></button></div><div className="space-y-4 sm:space-y-6"><div className="space-y-1"><label className="text-[8px] sm:text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Name</label><input value={userProfile.name} onChange={(e) => setUserProfile({...userProfile, name: e.target.value})} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:border-blue-500 font-bold text-sm" /></div><div className="space-y-1"><label className="text-[8px] sm:text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">WhatsApp</label><input value={userProfile.phoneNumber} onChange={(e) => setUserProfile({...userProfile, phoneNumber: e.target.value})} placeholder="+234..." className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:border-blue-500 font-bold text-sm" /></div><div className="space-y-1"><label className="text-[8px] sm:text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Email</label><input value={userProfile.email} onChange={(e) => setUserProfile({...userProfile, email: e.target.value})} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:border-blue-500 font-bold text-sm" /></div><button onClick={() => { setShowSettings(false); alert('Updated.'); }} className="w-full bg-blue-600 hover:bg-blue-700 py-3.5 rounded-xl font-bold text-base shadow-xl text-white mt-4">Sync Profile</button></div></div></div>}
-        {/* Fixed: Removed overflow-hidden from modal container to allow share dropdown visibility */}
         {showNewTipAlert && <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/95 backdrop-blur-md p-4 animate-in fade-in"><div className="bg-[#1b2537] rounded-[2rem] sm:rounded-[3.5rem] border border-yellow-500/30 w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh]"><div className="p-5 sm:p-8 border-b border-slate-800/60 bg-slate-900/40 flex justify-between items-center rounded-t-[2rem] sm:rounded-t-[3.5rem]"><div className="flex items-center gap-3 sm:gap-4"><div className="w-10 h-10 sm:w-12 sm:h-12 bg-yellow-500/10 rounded-xl flex items-center justify-center shadow-lg"><Bell className="text-yellow-400 animate-pulse w-5 h-5 sm:w-6 sm:h-6" /></div><div><h2 className="text-sm sm:text-2xl font-black text-white tracking-tight">Direct Brief</h2><p className="text-[8px] sm:text-[10px] font-black text-slate-500 uppercase tracking-widest">Protocol Engaged</p></div></div><button onClick={() => setShowNewTipAlert(null)} className="p-2 text-slate-500 hover:text-white transition-colors"><X size={20} /></button></div><div className="flex-1 overflow-y-auto p-5 sm:p-10 scrollbar-hide bg-slate-900/10"><MarkdownRenderer content={showNewTipAlert.content} /></div><div className="p-5 sm:p-8 border-t border-slate-800/60 bg-slate-900/40 flex flex-col sm:flex-row gap-2 sm:gap-3 rounded-b-[2rem] sm:rounded-b-[3.5rem]"><button onClick={() => { setShowNewTipAlert(null); setCurrentView(View.WEEKLY_TIPS); }} className="w-full sm:flex-1 bg-slate-800 hover:bg-slate-700 py-3 rounded-lg sm:rounded-xl font-bold text-slate-200 transition-all border border-slate-700 text-xs sm:text-base">Archive</button><div className="w-full sm:flex-1"><ShareButton content={showNewTipAlert.content} title={showNewTipAlert.topic} view={View.WEEKLY_TIPS} id={showNewTipAlert.id} triggerClassName="w-full flex items-center justify-center gap-2 sm:gap-3 bg-[#2563eb] hover:bg-blue-600 text-white py-3 rounded-lg sm:rounded-xl transition-all font-bold text-xs sm:text-lg shadow-lg" /></div></div></div></div>}
       </main>
     </div>
