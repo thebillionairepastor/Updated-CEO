@@ -2,12 +2,10 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
-  // Load env file based on `mode` in the current working directory.
-  // Set the third parameter to '' to load all env vars regardless of the `VITE_` prefix.
-  // FIX: Using '.' as the base path instead of process.cwd() to resolve TypeScript error on Process type.
-  const env = loadEnv(mode, '.', '');
+  // Load environment variables from .env files, but also look at process.env (Netlify)
+  const env = loadEnv(mode, process.cwd(), '');
   
-  // prioritize the environment variable set in Netlify/Shell, fallback to .env file
+  // Prioritize actual environment variables (set in Netlify dashboard)
   const apiKey = process.env.API_KEY || env.API_KEY || '';
 
   return {
@@ -18,6 +16,7 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      emptyOutDir: true,
       rollupOptions: {
         input: './index.html'
       }
