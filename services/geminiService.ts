@@ -5,14 +5,16 @@ import { ChatMessage, StoredReport, KnowledgeDocument, WeeklyTip } from "../type
 
 /**
  * World-class Gemini SDK implementation optimized for high-speed executive performance.
+ * Flash is used for high-concurrency tasks, Pro for deep audits.
  */
 const PRIMARY_MODEL = 'gemini-3-flash-preview';
 const PRO_MODEL = 'gemini-3-pro-preview';
 
 /**
- * Optimized Retry Utility with Jitter and Exponential Backoff
+ * Enhanced Retry Utility with Jitter and Exponential Backoff.
+ * Aggressive retry logic to wait out transient "Intelligence Core" busy states.
  */
-async function withRetry<T>(fn: () => Promise<T>, retries = 5, delay = 2000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 8, delay = 3500): Promise<T> {
   try {
     return await fn();
   } catch (error: any) {
@@ -21,13 +23,14 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 5, delay = 2000): Pr
       errorString.includes('RESOURCE_EXHAUSTED') || 
       errorString.includes('429') || 
       errorString.includes('QUOTA') ||
-      errorString.includes('LIMIT');
+      errorString.includes('LIMIT') ||
+      errorString.includes('HIGH LOAD');
 
     if (isQuotaError && retries > 0) {
-      // Add random jitter to prevent simultaneous retry bursts
-      const jitter = Math.random() * 1000;
+      // Add random jitter (500-1500ms) to desynchronize simultaneous retries
+      const jitter = Math.random() * 1000 + 500;
       await new Promise(resolve => setTimeout(resolve, delay + jitter));
-      return withRetry(fn, retries - 1, delay * 2); 
+      return withRetry(fn, retries - 1, delay * 1.5); 
     }
     throw error;
   }
@@ -39,7 +42,7 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 5, delay = 2000): Pr
 export const analyzeReport = async (reportText: string, reportType: 'PATROL' | 'INCIDENT' | 'SHIFT' = 'SHIFT'): Promise<string> => {
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `AUDIT TYPE: ${reportType} REPORT.\n\nCONTENT TO ANALYZE:\n${reportText}\n\nINSTRUCTIONS:\n1. Identify critical vulnerabilities and tactical gaps.\n2. Detect temporal or narrative inconsistencies.\n3. Advise exactly WHAT should be done and HOW to do it.\n4. Format as a CEO Executive Brief.`;
+    const prompt = `AUDIT TYPE: ${reportType} REPORT.\n\nCONTENT TO ANALYZE:\n${reportText}\n\nINSTRUCTIONS:\nPerform deep audit for liability, safety, and operational gaps. Provide step-by-step directives for the CEO.`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRO_MODEL,
@@ -49,7 +52,7 @@ export const analyzeReport = async (reportText: string, reportType: 'PATROL' | '
         thinkingConfig: { thinkingBudget: 0 }
       }
     });
-    return response.text || "Analysis engine recalibrating.";
+    return response.text || "Analysis engine stabilization link active.";
   });
 };
 
@@ -60,7 +63,7 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    const prompt = `LATEST NEWS: Strategic physical security trends, Nigerian NSCDC updates, and NIMASA maritime policy news for today ${today}.`;
+    const prompt = `STRATEGIC NEWS BRIEF: Top 10 critical security manpower and industrial protection updates for ${today}.`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
@@ -80,14 +83,15 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
       })) || [];
 
     return { 
-      text: response.text || "Intelligence stream temporarily offline.",
+      text: response.text || "Intelligence stream recalibrating.",
       sources: sources.length > 0 ? sources : undefined
     };
   });
 };
 
 /**
- * Streaming Executive Advisor Interface with Enhanced Resilience
+ * Streaming Executive Advisor with Search-to-Standard Fallback.
+ * If Google Search hits quota, we fallback to standard Gemini intelligence.
  */
 export const generateAdvisorStream = async (
   history: ChatMessage[], 
@@ -97,43 +101,104 @@ export const generateAdvisorStream = async (
 ) => {
   const conversationContext = history.slice(-5).map(h => `${h.role.toUpperCase()}: ${h.text}`).join('\n');
   
-  const startStream = async (retries = 6, delay = 2000): Promise<void> => {
+  const startStream = async (retries = 8, delay = 3000, useSearch = true): Promise<void> => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const config: any = {
+        systemInstruction: SYSTEM_INSTRUCTION_ADVISOR,
+        thinkingConfig: { thinkingBudget: 0 }
+      };
+
+      // Fallback: If we've failed 3 times, disable search tool to bypass search-specific quota limits
+      if (useSearch && retries > 5) {
+        config.tools = [{ googleSearch: {} }];
+      }
+
       const responseStream = await ai.models.generateContentStream({
         model: PRIMARY_MODEL,
         contents: `CONTEXT:\n${conversationContext}\n\nCEO QUERY: ${currentMessage}`,
-        config: {
-          systemInstruction: SYSTEM_INSTRUCTION_ADVISOR,
-          tools: [{ googleSearch: {} }],
-          thinkingConfig: { thinkingBudget: 0 }
-        }
+        config
       });
 
       let fullText = "";
       let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
 
       for await (const chunk of responseStream) {
-        const chunkText = chunk.text || "";
-        fullText += chunkText;
+        fullText += chunk.text || "";
         onChunk(fullText);
 
         const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
           ?.filter((c: any) => c.web?.uri)
-          .map((c: any) => ({
-            title: c.web.title,
-            url: c.web.uri
-          }));
+          .map((c: any) => ({ title: c.web.title, url: c.web.uri }));
 
         if (sources && sources.length > 0) finalSources = sources;
       }
       onComplete(finalSources);
     } catch (error: any) {
       const errorStr = JSON.stringify(error).toUpperCase();
-      if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('LIMIT'))) {
-        const jitter = Math.random() * 1000;
+      const isQuota = errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('RESOURCE_EXHAUSTED');
+      
+      if (isQuota && retries > 0) {
+        const jitter = Math.random() * 1500;
         await new Promise(r => setTimeout(r, delay + jitter));
-        return startStream(retries - 1, delay * 2);
+        // Force fallback if retries are low
+        return startStream(retries - 1, delay * 1.5, retries > 5);
+      }
+      throw error;
+    }
+  };
+
+  return startStream();
+};
+
+/**
+ * Streaming Global Trends / Best Practices (Max Resilience)
+ */
+export const fetchBestPracticesStream = async (
+  topic: string | undefined,
+  onChunk: (text: string) => void,
+  onComplete: (sources?: Array<{ title: string; url: string }>) => void
+) => {
+  const finalTopic = topic && topic.trim() !== "" ? topic : "latest 2024-2025 security manpower trends and ISO 18788 industrial protection standards";
+  const prompt = `CEO INTELLIGENCE BRIEF: Analyze "${finalTopic}" for strategic impact on manpower operations.`;
+
+  const startStream = async (retries = 8, delay = 4000, useSearch = true): Promise<void> => {
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const config: any = {
+        thinkingConfig: { thinkingBudget: 0 }
+      };
+      
+      // Fallback logic
+      if (useSearch && retries > 4) {
+        config.tools = [{ googleSearch: {} }];
+      }
+
+      const responseStream = await ai.models.generateContentStream({
+        model: PRIMARY_MODEL,
+        contents: prompt,
+        config
+      });
+
+      let fullText = "";
+      let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
+
+      for await (const chunk of responseStream) {
+        fullText += chunk.text || "";
+        onChunk(fullText);
+        const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
+          ?.filter((c: any) => c.web?.uri).map((c: any) => ({ title: c.web.title, url: c.web.uri }));
+        if (sources && sources.length > 0) finalSources = sources;
+      }
+      onComplete(finalSources);
+    } catch (error: any) {
+      const errorStr = JSON.stringify(error).toUpperCase();
+      const isQuota = errorStr.includes('429') || errorStr.includes('QUOTA');
+
+      if (isQuota && retries > 0) {
+        const jitter = Math.random() * 2000;
+        await new Promise(r => setTimeout(r, delay + jitter));
+        return startStream(retries - 1, delay * 1.3, retries > 4);
       }
       throw error;
     }
@@ -152,9 +217,9 @@ export const generateTrainingModuleStream = async (
   onChunk: (text: string) => void,
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
-  const prompt = `Develop a non-repetitive security training brief on "${topic}" for ${role} (Week ${week}). Focused on Nigerian industrial sector risks.`;
+  const prompt = `Training Module: "${topic}" for ${role} (Week ${week}). Focus on high-fidelity tactical objectives.`;
 
-  const startStream = async (retries = 6, delay = 2000): Promise<void> => {
+  const startStream = async (retries = 6, delay = 3500): Promise<void> => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const responseStream = await ai.models.generateContentStream({
@@ -162,76 +227,21 @@ export const generateTrainingModuleStream = async (
         contents: prompt,
         config: {
           systemInstruction: SYSTEM_INSTRUCTION_TRAINER,
-          tools: [{ googleSearch: {} }],
           thinkingConfig: { thinkingBudget: 0 }
         }
       });
 
       let fullText = "";
-      let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
-
       for await (const chunk of responseStream) {
         fullText += chunk.text || "";
         onChunk(fullText);
-        const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
-          ?.filter((c: any) => c.web?.uri).map((c: any) => ({ title: c.web.title, url: c.web.uri }));
-        if (sources && sources.length > 0) finalSources = sources;
       }
-      onComplete(finalSources);
+      onComplete();
     } catch (error: any) {
       const errorStr = JSON.stringify(error).toUpperCase();
       if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA'))) {
-        const jitter = Math.random() * 1000;
-        await new Promise(r => setTimeout(r, delay + jitter));
-        return startStream(retries - 1, delay * 2);
-      }
-      throw error;
-    }
-  };
-
-  return startStream();
-};
-
-/**
- * Streaming Global Trends / Best Practices Interface
- */
-export const fetchBestPracticesStream = async (
-  topic: string | undefined,
-  onChunk: (text: string) => void,
-  onComplete: (sources?: Array<{ title: string; url: string }>) => void
-) => {
-  const finalTopic = topic && topic.trim() !== "" ? topic : "latest 2024-2025 global physical security manpower trends and ISO standards";
-  const prompt = `CEO STRATEGIC INTELLIGENCE BRIEF: Analyze current shifts and standards for "${finalTopic}". Include impact on security manpower industry.`;
-
-  const startStream = async (retries = 6, delay = 2500): Promise<void> => {
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const responseStream = await ai.models.generateContentStream({
-        model: PRIMARY_MODEL,
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          thinkingConfig: { thinkingBudget: 0 }
-        }
-      });
-
-      let fullText = "";
-      let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
-
-      for await (const chunk of responseStream) {
-        fullText += chunk.text || "";
-        onChunk(fullText);
-        const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
-          ?.filter((c: any) => c.web?.uri).map((c: any) => ({ title: c.web.title, url: c.web.uri }));
-        if (sources && sources.length > 0) finalSources = sources;
-      }
-      onComplete(finalSources);
-    } catch (error: any) {
-      const errorStr = JSON.stringify(error).toUpperCase();
-      if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA'))) {
-        const jitter = Math.random() * 1000;
-        await new Promise(r => setTimeout(r, delay + jitter));
-        return startStream(retries - 1, delay * 2.5);
+        await new Promise(r => setTimeout(r, delay + (Math.random() * 1000)));
+        return startStream(retries - 1, delay * 1.8);
       }
       throw error;
     }
@@ -248,13 +258,13 @@ export const generateWeeklyTip = async (previousTips: WeeklyTip[]): Promise<stri
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: `Generate a new Weekly Strategic Focus. Do not repeat: ${previousTips.slice(0, 5).map(t => t.topic).join(', ')}.`,
+      contents: `Generate a unique Weekly Strategic Focus. Topic rotation is key.`,
       config: { 
         systemInstruction: SYSTEM_INSTRUCTION_WEEKLY_TIP,
         thinkingConfig: { thinkingBudget: 0 }
       }
     });
-    return response.text || "Maintain absolute perimeter integrity.";
+    return response.text || "Remain alert and maintain perimeter integrity.";
   });
 };
 
@@ -263,7 +273,7 @@ export const fetchTopicSuggestions = async (query: string): Promise<string[]> =>
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: `Provide 6 specialized training topic suggestions for: "${query}". Format as JSON string array.`,
+      contents: `Suggest 6 security training topics for: "${query}". JSON Array format.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -277,12 +287,12 @@ export const fetchTopicSuggestions = async (query: string): Promise<string[]> =>
 export const analyzePatrolPatterns = async (reports: StoredReport[]): Promise<string> => {
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const context = reports.map(r => r.content).slice(0, 10).join('\n---\n');
+    const context = reports.map(r => r.content).slice(0, 5).join('\n---\n');
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRO_MODEL,
-      contents: `Audit these patrol reports for efficiency and anomalies:\n\n${context}`,
+      contents: `Identify patrol timing anomalies:\n\n${context}`,
       config: { thinkingConfig: { thinkingBudget: 0 } }
     });
-    return response.text || "Patrol intelligence analysis complete.";
+    return response.text || "Patrol intelligence scan complete.";
   });
 };

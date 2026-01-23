@@ -51,6 +51,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showNewTipAlert, setShowNewTipAlert] = useState<WeeklyTip | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [isSystemRetrying, setIsSystemRetrying] = useState(false);
 
   const [isOfflineMode, setIsOfflineMode] = useState(!navigator.onLine);
 
@@ -257,10 +258,12 @@ function App() {
     const errorStr = JSON.stringify(error).toUpperCase();
     const isQuota = errorStr.includes('RESOURCE_EXHAUSTED') || errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('LIMIT');
     if (isQuota) {
-      setApiError("Intelligence Core is experiencing peak demand. Security protocols are retrying connection. Please maintain standby.");
+      setApiError("Intelligence Core under maximum load. Stabilization link active. If search fails, AI will fallback to internal core knowledge shortly.");
     } else {
       setApiError(`Communication Breach: ${error?.message || "Internal network instability."}`);
     }
+    // Auto-clear after a few seconds
+    setTimeout(() => setApiError(null), 8000);
   };
 
   const handleSendMessage = async () => {
@@ -274,6 +277,7 @@ function App() {
     const currentInput = inputMessage;
     setInputMessage('');
     setIsAdvisorThinking(true);
+    setIsSystemRetrying(false);
 
     try {
       await generateAdvisorStream(
@@ -292,6 +296,7 @@ function App() {
       setMessages(prev => prev.filter(msg => msg.id !== tempId));
     } finally { 
       setIsAdvisorThinking(false); 
+      setIsSystemRetrying(false);
     }
   };
 
