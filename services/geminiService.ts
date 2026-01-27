@@ -11,29 +11,53 @@ const PRIMARY_MODEL = 'gemini-3-flash-preview';
 const PRO_MODEL = 'gemini-3-pro-preview';
 
 /**
- * Enhanced Retry Utility with Jitter and Exponential Backoff.
- * Aggressive retry logic to wait out transient "Intelligence Core" busy states (429/Quota).
+ * Shared utility to detect quota-related errors from the Gemini API.
  */
-async function withRetry<T>(fn: () => Promise<T>, retries = 8, delay = 3500): Promise<T> {
-  try {
-    return await fn();
-  } catch (error: any) {
-    const errorString = JSON.stringify(error).toUpperCase();
-    const isQuotaError = 
-      errorString.includes('RESOURCE_EXHAUSTED') || 
-      errorString.includes('429') || 
-      errorString.includes('QUOTA') ||
-      errorString.includes('LIMIT') ||
-      errorString.includes('HIGH LOAD');
+const isQuotaError = (error: any): boolean => {
+  const errorString = JSON.stringify(error).toUpperCase();
+  return (
+    errorString.includes('RESOURCE_EXHAUSTED') || 
+    errorString.includes('429') || 
+    errorString.includes('QUOTA') ||
+    errorString.includes('LIMIT') ||
+    errorString.includes('HIGH LOAD') ||
+    errorString.includes('REACHED')
+  );
+};
 
-    if (isQuotaError && retries > 0) {
-      // Add random jitter (500-1500ms) to desynchronize simultaneous retries
-      const jitter = Math.random() * 1000 + 500;
-      await new Promise(resolve => setTimeout(resolve, delay + jitter));
-      return withRetry(fn, retries - 1, delay * 1.5); 
+/**
+ * Robust Backoff Calculator: Exponential growth + Random Jitter.
+ * Prevents "thundering herd" issues and respects API rate limits.
+ */
+const getBackoffDelay = (retriesUsed: number, baseDelay: number) => {
+  // Exponential factor: 1.5^n
+  const expFactor = Math.pow(1.5, retriesUsed);
+  // Multiplicative jitter: +/- 20% of the calculated delay
+  const jitter = (Math.random() * 0.4 - 0.2) * (baseDelay * expFactor);
+  return (baseDelay * expFactor) + jitter;
+};
+
+/**
+ * Enhanced Retry Utility for Standard (non-streaming) AI calls.
+ */
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 8, baseDelay = 3000): Promise<T> {
+  let attempt = 0;
+  
+  const execute = async (): Promise<T> => {
+    try {
+      return await fn();
+    } catch (error: any) {
+      if (isQuotaError(error) && attempt < maxRetries) {
+        const delay = getBackoffDelay(attempt, baseDelay);
+        attempt++;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return execute();
+      }
+      throw error;
     }
-    throw error;
-  }
+  };
+
+  return execute();
 }
 
 /**
@@ -91,7 +115,8 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
 
 /**
  * Streaming Executive Advisor with Search-to-Standard Fallback.
- * If Google Search hits quota repeatedly, we fallback to standard Gemini intelligence.
+ * Robustly handles 429s by retrying with exponential backoff and disabling the search tool
+ * if quota persists.
  */
 export const generateAdvisorStream = async (
   history: ChatMessage[], 
@@ -101,7 +126,7 @@ export const generateAdvisorStream = async (
 ) => {
   const conversationContext = history.slice(-5).map(h => `${h.role.toUpperCase()}: ${h.text}`).join('\n');
   
-  const startStream = async (retries = 8, delay = 3000, useSearch = true): Promise<void> => {
+  const startStream = async (retriesUsed = 0, maxRetries = 8, baseDelay = 3000, useSearch = true): Promise<void> => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const config: any = {
@@ -109,9 +134,12 @@ export const generateAdvisorStream = async (
         thinkingConfig: { thinkingBudget: 0 }
       };
 
-      // Fallback logic: If we've hit quota multiple times, search is likely the bottleneck.
-      // We disable it after 3 failures to ensure the user gets a model response.
-      if (useSearch && retries > 5) {
+      // Search fallback strategy: Disable search after 3 failures (leaving 5 more standard retries)
+      if (useSearch && retriesUsed > 3) {
+        useSearch = false;
+      }
+      
+      if (useSearch) {
         config.tools = [{ googleSearch: {} }];
       }
 
@@ -136,14 +164,10 @@ export const generateAdvisorStream = async (
       }
       onComplete(finalSources);
     } catch (error: any) {
-      const errorStr = JSON.stringify(error).toUpperCase();
-      const isQuota = errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('RESOURCE_EXHAUSTED');
-      
-      if (isQuota && retries > 0) {
-        const jitter = Math.random() * 1500;
-        await new Promise(r => setTimeout(r, delay + jitter));
-        // Force fallback if retries are low
-        return startStream(retries - 1, delay * 1.5, retries > 5);
+      if (isQuotaError(error) && retriesUsed < maxRetries) {
+        const delay = getBackoffDelay(retriesUsed, baseDelay);
+        await new Promise(r => setTimeout(r, delay));
+        return startStream(retriesUsed + 1, maxRetries, baseDelay, useSearch);
       }
       throw error;
     }
@@ -161,17 +185,20 @@ export const fetchBestPracticesStream = async (
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
   const finalTopic = topic && topic.trim() !== "" ? topic : "latest 2024-2025 security manpower trends, ISO 18788 updates, and ASIS certifications";
-  const prompt = `CEO STRATEGIC INTELLIGENCE: Analyze global physical security trends for "${finalTopic}". Focus on operational efficiency and manpower supply.`;
+  const prompt = `CEO STRATEGIC INTELLIGENCE: Analyze global physical security trends for "${finalTopic}". Focus on operational efficiency and manpower supply. Use simple terms.`;
 
-  const startStream = async (retries = 8, delay = 4000, useSearch = true): Promise<void> => {
+  const startStream = async (retriesUsed = 0, maxRetries = 8, baseDelay = 3000, useSearch = true): Promise<void> => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const config: any = {
         thinkingConfig: { thinkingBudget: 0 }
       };
       
-      // Fallback: If search tool is causing 429s, we eventually try without it to deliver results.
-      if (useSearch && retries > 4) {
+      if (useSearch && retriesUsed > 4) {
+        useSearch = false;
+      }
+
+      if (useSearch) {
         config.tools = [{ googleSearch: {} }];
       }
 
@@ -193,13 +220,10 @@ export const fetchBestPracticesStream = async (
       }
       onComplete(finalSources);
     } catch (error: any) {
-      const errorStr = JSON.stringify(error).toUpperCase();
-      const isQuota = errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('RESOURCE_EXHAUSTED');
-
-      if (isQuota && retries > 0) {
-        const jitter = Math.random() * 2000;
-        await new Promise(r => setTimeout(r, delay + jitter));
-        return startStream(retries - 1, delay * 1.3, retries > 4);
+      if (isQuotaError(error) && retriesUsed < maxRetries) {
+        const delay = getBackoffDelay(retriesUsed, baseDelay);
+        await new Promise(r => setTimeout(r, delay));
+        return startStream(retriesUsed + 1, maxRetries, baseDelay, useSearch);
       }
       throw error;
     }
@@ -218,9 +242,9 @@ export const generateTrainingModuleStream = async (
   onChunk: (text: string) => void,
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
-  const prompt = `Detailed security training brief: "${topic}". Role: ${role}. Week: ${week}. Focused on non-repetitive industrial tactical insights.`;
+  const prompt = `Detailed security training brief: "${topic}". Role: ${role}. Week: ${week}. Focused on non-repetitive industrial tactical insights. Use clear, plain English.`;
 
-  const startStream = async (retries = 6, delay = 3500): Promise<void> => {
+  const startStream = async (retriesUsed = 0, maxRetries = 8, baseDelay = 3500): Promise<void> => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const responseStream = await ai.models.generateContentStream({
@@ -239,10 +263,10 @@ export const generateTrainingModuleStream = async (
       }
       onComplete();
     } catch (error: any) {
-      const errorStr = JSON.stringify(error).toUpperCase();
-      if (retries > 0 && (errorStr.includes('429') || errorStr.includes('QUOTA'))) {
-        await new Promise(r => setTimeout(r, delay + (Math.random() * 1000)));
-        return startStream(retries - 1, delay * 1.8);
+      if (isQuotaError(error) && retriesUsed < maxRetries) {
+        const delay = getBackoffDelay(retriesUsed, baseDelay);
+        await new Promise(r => setTimeout(r, delay));
+        return startStream(retriesUsed + 1, maxRetries, baseDelay);
       }
       throw error;
     }
@@ -257,9 +281,11 @@ export const generateTrainingModuleStream = async (
 export const generateWeeklyTip = async (previousTips: WeeklyTip[]): Promise<string> => {
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const todayStr = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: `Generate a unique Weekly Strategic Focus. Topic rotation is key.`,
+      contents: `TODAY'S DATE: ${todayStr}. Generate a unique Weekly Strategic Focus starting today. Rotate the topic from: Vehicle Search, Document Security, or Perimeter Watch. Use plain, easy-to-understand terms for the CEO to teach their staff. Teach the "Why" and provide simple steps.`,
       config: { 
         systemInstruction: SYSTEM_INSTRUCTION_WEEKLY_TIP,
         thinkingConfig: { thinkingBudget: 0 }
@@ -291,7 +317,7 @@ export const analyzePatrolPatterns = async (reports: StoredReport[]): Promise<st
     const context = reports.map(r => r.content).slice(0, 5).join('\n---\n');
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRO_MODEL,
-      contents: `Identify patrol timing anomalies:\n\n${context}`,
+      contents: `Identify patrol timing anomalies and operational gaps in these logs:\n\n${context}`,
       config: { thinkingConfig: { thinkingBudget: 0 } }
     });
     return response.text || "Patrol intelligence scan complete.";
