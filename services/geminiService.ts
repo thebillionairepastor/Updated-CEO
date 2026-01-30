@@ -1,97 +1,120 @@
 
 import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
-import { SYSTEM_INSTRUCTION_ADVISOR, SYSTEM_INSTRUCTION_TRAINER, SYSTEM_INSTRUCTION_WEEKLY_TIP, SYSTEM_INSTRUCTION_NEWS, SYSTEM_INSTRUCTION_AUDIT_INTELLIGENCE } from "../constants";
-import { ChatMessage, StoredReport, KnowledgeDocument, WeeklyTip } from "../types";
+import { 
+  SYSTEM_INSTRUCTION_ADVISOR, 
+  SYSTEM_INSTRUCTION_TRAINER, 
+  SYSTEM_INSTRUCTION_WEEKLY_TIP, 
+  SYSTEM_INSTRUCTION_NEWS, 
+  SYSTEM_INSTRUCTION_AUDIT_TACTICAL,
+  SYSTEM_INSTRUCTION_AUDIT_LIABILITY 
+} from "../constants";
+import { ChatMessage, WeeklyTip } from "../types";
 
-/**
- * World-class Gemini SDK implementation optimized for high-speed executive performance.
- * Flash is used for high-concurrency/real-time tasks, Pro for deep auditing.
- */
 const PRIMARY_MODEL = 'gemini-3-flash-preview';
-const PRO_MODEL = 'gemini-3-pro-preview';
 
-/**
- * Shared utility to detect quota-related errors from the Gemini API.
- */
+// --- Caching Layer ---
+const CACHE_KEY = 'antirisk_advisor_cache';
+const MAX_CACHE_SIZE = 50;
+
+interface CacheEntry {
+  response: string;
+  timestamp: number;
+  sources?: Array<{ title: string; url: string }>;
+}
+
+const getCache = (): Record<string, CacheEntry> => {
+  try {
+    const cached = localStorage.getItem(CACHE_KEY);
+    return cached ? JSON.parse(cached) : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveCache = (cache: Record<string, CacheEntry>) => {
+  try {
+    const entries = Object.entries(cache);
+    // Prune if too large
+    if (entries.length > MAX_CACHE_SIZE) {
+      const sorted = entries.sort((a, b) => b[1].timestamp - a[1].timestamp).slice(0, MAX_CACHE_SIZE);
+      cache = Object.fromEntries(sorted);
+    }
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+  } catch (e) {
+    console.warn("Cache save failed", e);
+  }
+};
+
+const generateCacheKey = (query: string, context: string): string => {
+  return btoa(query.trim().toLowerCase() + context.trim().toLowerCase()).slice(0, 64);
+};
+
+// --- API Helpers ---
+
 const isQuotaError = (error: any): boolean => {
   const errorString = JSON.stringify(error).toUpperCase();
   return (
     errorString.includes('RESOURCE_EXHAUSTED') || 
     errorString.includes('429') || 
-    errorString.includes('QUOTA') ||
-    errorString.includes('LIMIT') ||
-    errorString.includes('HIGH LOAD') ||
-    errorString.includes('REACHED')
+    errorString.includes('QUOTA')
   );
 };
 
-/**
- * Robust Backoff Calculator: Exponential growth + Random Jitter.
- * Prevents "thundering herd" issues and respects API rate limits.
- */
-const getBackoffDelay = (retriesUsed: number, baseDelay: number) => {
-  // Exponential factor: 1.5^n
-  const expFactor = Math.pow(1.5, retriesUsed);
-  // Multiplicative jitter: +/- 20% of the calculated delay
-  const jitter = (Math.random() * 0.4 - 0.2) * (baseDelay * expFactor);
-  return (baseDelay * expFactor) + jitter;
-};
-
-/**
- * Enhanced Retry Utility for Standard (non-streaming) AI calls.
- */
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 8, baseDelay = 3000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
   let attempt = 0;
-  
   const execute = async (): Promise<T> => {
     try {
       return await fn();
     } catch (error: any) {
       if (isQuotaError(error) && attempt < maxRetries) {
-        const delay = getBackoffDelay(attempt, baseDelay);
         attempt++;
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
         return execute();
       }
       throw error;
     }
   };
-
   return execute();
 }
 
-/**
- * Audit Log Intelligence Analysis (CEO level deep analysis)
- */
-export const analyzeReport = async (reportText: string, reportType: 'PATROL' | 'INCIDENT' | 'SHIFT' = 'SHIFT'): Promise<string> => {
-  return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `AUDIT TYPE: ${reportType} REPORT.\n\nCONTENT TO ANALYZE:\n${reportText}\n\nINSTRUCTIONS:\nAnalyze vulnerabilities, inconsistencies, and provide actionable CEO-level directives.`;
-
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: PRO_MODEL,
-      contents: prompt,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION_AUDIT_INTELLIGENCE,
+export const analyzeReportParallel = async (reportText: string): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+  
+  const tacticalPromise = withRetry(async () => {
+    const resp = await ai.models.generateContent({
+      model: PRIMARY_MODEL,
+      contents: reportText,
+      config: { 
+        systemInstruction: SYSTEM_INSTRUCTION_AUDIT_TACTICAL,
         thinkingConfig: { thinkingBudget: 0 }
       }
     });
-    return response.text || "Analysis engine recalibrating.";
+    return resp.text;
   });
+
+  const liabilityPromise = withRetry(async () => {
+    const resp = await ai.models.generateContent({
+      model: PRIMARY_MODEL,
+      contents: reportText,
+      config: { 
+        systemInstruction: SYSTEM_INSTRUCTION_AUDIT_LIABILITY,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
+    });
+    return resp.text;
+  });
+
+  const [tactical, liability] = await Promise.all([tacticalPromise, liabilityPromise]);
+
+  return `# Executive Audit Summary\n\n## 🛡️ Tactical Review\n${tactical}\n\n## ⚖️ Liability & Compliance\n${liability}`;
 };
 
-/**
- * Real-time Security News Blog Service
- */
 export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Array<{ title: string; url: string }> }> => {
   return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    const prompt = `URGENT CEO BRIEF: 10 Latest physical security manpower trends and regulatory updates for ${today}.`;
-
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: prompt,
+      contents: `Latest Nigerian & International security news as of ${new Date().toLocaleDateString()}. Focus on NSCDC, NIMASA, and ISO standards.`,
       config: {
         systemInstruction: SYSTEM_INSTRUCTION_NEWS,
         tools: [{ googleSearch: {} }],
@@ -101,111 +124,40 @@ export const fetchSecurityNews = async (): Promise<{ text: string; sources?: Arr
 
     const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
       ?.filter((chunk: any) => chunk.web?.uri)
-      .map((chunk: any) => ({
-        title: chunk.web.title,
-        url: chunk.web.uri
-      })) || [];
+      .map((chunk: any) => ({ title: chunk.web.title, url: chunk.web.uri })) || [];
 
-    return { 
-      text: response.text || "Intelligence stream temporarily offline.",
-      sources: sources.length > 0 ? sources : undefined
-    };
+    return { text: response.text || "Intelligence stream temporarily unavailable.", sources };
   });
 };
 
-/**
- * Streaming Executive Advisor with Search-to-Standard Fallback.
- * Robustly handles 429s by retrying with exponential backoff and disabling the search tool
- * if quota persists.
- */
 export const generateAdvisorStream = async (
   history: ChatMessage[], 
   currentMessage: string,
   onChunk: (text: string) => void,
-  onComplete: (sources?: Array<{ title: string; url: string }>) => void
+  onComplete: (sources?: Array<{ title: string; url: string }>, cached?: boolean) => void,
+  kbContext?: string
 ) => {
-  const conversationContext = history.slice(-5).map(h => `${h.role.toUpperCase()}: ${h.text}`).join('\n');
-  
-  const startStream = async (retriesUsed = 0, maxRetries = 8, baseDelay = 3000, useSearch = true): Promise<void> => {
+  const conversationContext = history.slice(-2).map(h => `${h.role}: ${h.text}`).join('\n');
+  const cacheKey = generateCacheKey(currentMessage, kbContext || '');
+  const cache = getCache();
+
+  if (cache[cacheKey]) {
+    onChunk(cache[cacheKey].response);
+    onComplete(cache[cacheKey].sources, true);
+    return;
+  }
+
+  const startStream = async (retriesUsed = 0): Promise<void> => {
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const config: any = {
-        systemInstruction: SYSTEM_INSTRUCTION_ADVISOR,
-        thinkingConfig: { thinkingBudget: 0 }
-      };
-
-      // Search fallback strategy: Disable search after 3 failures (leaving 5 more standard retries)
-      if (useSearch && retriesUsed > 3) {
-        useSearch = false;
-      }
-      
-      if (useSearch) {
-        config.tools = [{ googleSearch: {} }];
-      }
-
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const responseStream = await ai.models.generateContentStream({
         model: PRIMARY_MODEL,
-        contents: `CONTEXT:\n${conversationContext}\n\nCEO QUERY: ${currentMessage}`,
-        config
-      });
-
-      let fullText = "";
-      let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
-
-      for await (const chunk of responseStream) {
-        fullText += chunk.text || "";
-        onChunk(fullText);
-
-        const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
-          ?.filter((c: any) => c.web?.uri)
-          .map((c: any) => ({ title: c.web.title, url: c.web.uri }));
-
-        if (sources && sources.length > 0) finalSources = sources;
-      }
-      onComplete(finalSources);
-    } catch (error: any) {
-      if (isQuotaError(error) && retriesUsed < maxRetries) {
-        const delay = getBackoffDelay(retriesUsed, baseDelay);
-        await new Promise(r => setTimeout(r, delay));
-        return startStream(retriesUsed + 1, maxRetries, baseDelay, useSearch);
-      }
-      throw error;
-    }
-  };
-
-  return startStream();
-};
-
-/**
- * Streaming Global Trends / Best Practices (Max Resilience Strategy)
- */
-export const fetchBestPracticesStream = async (
-  topic: string | undefined,
-  onChunk: (text: string) => void,
-  onComplete: (sources?: Array<{ title: string; url: string }>) => void
-) => {
-  const finalTopic = topic && topic.trim() !== "" ? topic : "latest 2024-2025 security manpower trends, ISO 18788 updates, and ASIS certifications";
-  const prompt = `CEO STRATEGIC INTELLIGENCE: Analyze global physical security trends for "${finalTopic}". Focus on operational efficiency and manpower supply. Use simple terms.`;
-
-  const startStream = async (retriesUsed = 0, maxRetries = 8, baseDelay = 3000, useSearch = true): Promise<void> => {
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const config: any = {
-        thinkingConfig: { thinkingBudget: 0 }
-      };
-      
-      if (useSearch && retriesUsed > 4) {
-        useSearch = false;
-      }
-
-      if (useSearch) {
-        config.tools = [{ googleSearch: {} }];
-      }
-
-      const responseStream = await ai.models.generateContentStream({
-        model: PRIMARY_MODEL,
-        contents: prompt,
-        config
+        contents: `KNOWLEDGE_BASE: ${kbContext || 'Standard Protocols'}\nCONTEXT: ${conversationContext}\n\nQUERY: ${currentMessage}`,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION_ADVISOR,
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingBudget: 0 }
+        }
       });
 
       let fullText = "";
@@ -218,44 +170,89 @@ export const fetchBestPracticesStream = async (
           ?.filter((c: any) => c.web?.uri).map((c: any) => ({ title: c.web.title, url: c.web.uri }));
         if (sources && sources.length > 0) finalSources = sources;
       }
-      onComplete(finalSources);
+
+      const newCache = getCache();
+      newCache[cacheKey] = {
+        response: fullText,
+        timestamp: Date.now(),
+        sources: finalSources
+      };
+      saveCache(newCache);
+
+      onComplete(finalSources, false);
     } catch (error: any) {
-      if (isQuotaError(error) && retriesUsed < maxRetries) {
-        const delay = getBackoffDelay(retriesUsed, baseDelay);
-        await new Promise(r => setTimeout(r, delay));
-        return startStream(retriesUsed + 1, maxRetries, baseDelay, useSearch);
+      if (isQuotaError(error) && retriesUsed < 2) {
+        await new Promise(r => setTimeout(r, 1000));
+        return startStream(retriesUsed + 1);
       }
       throw error;
     }
   };
-
   return startStream();
 };
 
-/**
- * Streaming Tactical Training Module Generator
- */
-export const generateTrainingModuleStream = async (
-  topic: string, 
-  week: number = 1, 
-  role: string = "All Roles",
+export const fetchBestPracticesStream = async (
+  topic: string | undefined,
   onChunk: (text: string) => void,
   onComplete: (sources?: Array<{ title: string; url: string }>) => void
 ) => {
-  const prompt = `Detailed security training brief: "${topic}". Role: ${role}. Week: ${week}. Focused on non-repetitive industrial tactical insights. Use clear, plain English.`;
+  const dateStr = new Date().toLocaleDateString();
+  const query = `Latest 2024-2025 regulatory updates, physical security policies, and industrial standards from NSCDC (Nigeria), NIMASA, ISO 18788, and ASIS. 
+  Focus: ${topic || 'Physical Security Company Standards'}. 
+  Format as 3-4 High-Speed Bulletins.`;
 
-  const startStream = async (retriesUsed = 0, maxRetries = 8, baseDelay = 3500): Promise<void> => {
+  const startStream = async (retriesUsed = 0): Promise<void> => {
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const responseStream = await ai.models.generateContentStream({
         model: PRIMARY_MODEL,
-        contents: prompt,
-        config: {
-          systemInstruction: SYSTEM_INSTRUCTION_TRAINER,
+        contents: query,
+        config: { 
+          systemInstruction: "You are a Real-Time Regulatory Intelligence Officer. Provide the latest physical security standards and news from Nigeria (NSCDC, NIMASA) and International bodies (ISO, ASIS). Output MUST be ultra-fast, concise markdown bullets with technical precision. Do not use conversational filler.",
+          tools: [{ googleSearch: {} }],
           thinkingConfig: { thinkingBudget: 0 }
         }
       });
 
+      let fullText = "";
+      let finalSources: Array<{ title: string; url: string }> | undefined = undefined;
+      for await (const chunk of responseStream) {
+        fullText += chunk.text || "";
+        onChunk(fullText);
+        const sources = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks
+          ?.filter((c: any) => c.web?.uri).map((c: any) => ({ title: c.web.title, url: c.web.uri }));
+        if (sources && sources.length > 0) finalSources = sources;
+      }
+      onComplete(finalSources);
+    } catch (error: any) {
+      if (isQuotaError(error) && retriesUsed < 2) {
+        await new Promise(r => setTimeout(r, 1000));
+        return startStream(retriesUsed + 1);
+      }
+      throw error;
+    }
+  };
+  return startStream();
+};
+
+export const generateTrainingModuleStream = async (
+  topic: string, 
+  week: number = 1, 
+  role: string = "Security Guard",
+  onChunk: (text: string) => void,
+  onComplete: () => void
+) => {
+  const startStream = async (retriesUsed = 0): Promise<void> => {
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+      const responseStream = await ai.models.generateContentStream({
+        model: PRIMARY_MODEL,
+        contents: `Training: ${topic}. Target Role: ${role}. Schedule: Week ${week}.`,
+        config: { 
+          systemInstruction: SYSTEM_INSTRUCTION_TRAINER,
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      });
       let fullText = "";
       for await (const chunk of responseStream) {
         fullText += chunk.text || "";
@@ -263,63 +260,47 @@ export const generateTrainingModuleStream = async (
       }
       onComplete();
     } catch (error: any) {
-      if (isQuotaError(error) && retriesUsed < maxRetries) {
-        const delay = getBackoffDelay(retriesUsed, baseDelay);
-        await new Promise(r => setTimeout(r, delay));
-        return startStream(retriesUsed + 1, maxRetries, baseDelay);
+      if (isQuotaError(error) && retriesUsed < 2) {
+        await new Promise(r => setTimeout(r, 1000));
+        return startStream(retriesUsed + 1);
       }
       throw error;
     }
   };
-
   return startStream();
 };
 
-/**
- * Weekly Strategic Directive Generator
- */
-export const generateWeeklyTip = async (previousTips: WeeklyTip[]): Promise<string> => {
+export const generateWeeklyTip = async (): Promise<string> => {
   return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const todayStr = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: `TODAY'S DATE: ${todayStr}. Generate a unique Weekly Strategic Focus starting today. Rotate the topic from: Vehicle Search, Document Security, or Perimeter Watch. Use plain, easy-to-understand terms for the CEO to teach their staff. Teach the "Why" and provide simple steps.`,
+      contents: `Generate a Weekly Strategic Directive. Current Date: ${new Date().toLocaleDateString()}.`,
       config: { 
         systemInstruction: SYSTEM_INSTRUCTION_WEEKLY_TIP,
         thinkingConfig: { thinkingBudget: 0 }
       }
     });
-    return response.text || "Remain alert and maintain perimeter integrity.";
+    return response.text || "Ensure operational readiness and site integrity.";
   });
 };
 
 export const fetchTopicSuggestions = async (query: string): Promise<string[]> => {
   return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: PRIMARY_MODEL,
-      contents: `Suggest 6 security training topics for: "${query}". JSON Array format.`,
+      contents: `Suggest 5 advanced training topics for security guards focusing on: "${query}".`,
       config: {
         responseMimeType: "application/json",
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } },
         thinkingConfig: { thinkingBudget: 0 }
       }
     });
-    try { return JSON.parse(response.text || "[]"); } catch { return []; }
-  });
-};
-
-export const analyzePatrolPatterns = async (reports: StoredReport[]): Promise<string> => {
-  return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const context = reports.map(r => r.content).slice(0, 5).join('\n---\n');
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: PRO_MODEL,
-      contents: `Identify patrol timing anomalies and operational gaps in these logs:\n\n${context}`,
-      config: { thinkingConfig: { thinkingBudget: 0 } }
-    });
-    return response.text || "Patrol intelligence scan complete.";
+    try { 
+      return JSON.parse(response.text || "[]"); 
+    } catch { 
+      return []; 
+    }
   });
 };

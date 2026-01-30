@@ -1,13 +1,26 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Menu, Send, Plus, Search, RefreshCw, Download, FileText, ChevronRight, ShieldAlert, BookOpen, Globe, Briefcase, Calendar, ChevronLeft, Save, Trash2, Check, Lightbulb, Printer, Settings as SettingsIcon, MessageCircle, Mail, X, Bell, Database, Upload, Pin, PinOff, BarChart2, Sparkles, Copy, Lock, ShieldCheck, Fingerprint, Eye, Paperclip, XCircle, Bookmark, BookmarkCheck, LayoutGrid, ListFilter, Wand2, Map, ExternalLink, ImageIcon, Target, User, Phone, FileUp, Key, AlertTriangle, EyeIcon, CloudDownload, WifiOff, Newspaper, Zap, Activity, Edit, History } from 'lucide-react';
-import Navigation from './components/Navigation.tsx';
-import MarkdownRenderer from './components/MarkdownRenderer.tsx';
-import ShareButton from './components/ShareButton.tsx';
-import IncidentChart from './components/IncidentChart.tsx';
-import { View, ChatMessage, Template, SecurityRole, StoredReport, WeeklyTip, UserProfile, KnowledgeDocument, SavedTrend, StoredTrainingModule, NewsItem } from './types.ts';
-import { STATIC_TEMPLATES, SECURITY_TRAINING_DB } from './constants.ts';
-import { generateTrainingModuleStream, analyzeReport, fetchBestPracticesStream, generateWeeklyTip, fetchTopicSuggestions, fetchSecurityNews, analyzePatrolPatterns, generateAdvisorStream } from './services/geminiService.ts';
+import { 
+  Menu, Send, Plus, Search, RefreshCw, ShieldAlert, BookOpen, Globe, 
+  Briefcase, Save, Trash2, ShieldCheck, Bookmark, Sparkles, Copy, 
+  X, Newspaper, Zap, Activity, Edit, History, Lightbulb, Target,
+  Calendar, Bell, ChevronRight, AlertTriangle, ArrowLeft, Clock,
+  ExternalLink, TrendingUp, Info, Pin, PinOff
+} from 'lucide-react';
+import Navigation from './components/Navigation';
+import MarkdownRenderer from './components/MarkdownRenderer';
+import ShareButton from './components/ShareButton';
+import IncidentChart from './components/IncidentChart';
+import { 
+  View, ChatMessage, Template, SecurityRole, StoredReport, 
+  WeeklyTip, UserProfile, StoredTrainingModule 
+} from './types';
+import { STATIC_TEMPLATES, SECURITY_TRAINING_DB } from './constants';
+import { 
+  generateTrainingModuleStream, analyzeReportParallel, 
+  fetchBestPracticesStream, generateWeeklyTip, 
+  fetchSecurityNews, generateAdvisorStream 
+} from './services/geminiService';
 
 const AntiRiskLogo = ({ className = "w-24 h-24", light = false }: { className?: string; light?: boolean }) => (
   <svg viewBox="0 0 100 100" className={className} xmlns="http://www.w3.org/2000/svg">
@@ -20,6 +33,40 @@ const AntiRiskLogo = ({ className = "w-24 h-24", light = false }: { className?: 
   </svg>
 );
 
+const safeParse = <T,>(key: string, fallback: T): T => {
+  try {
+    const item = localStorage.getItem(key);
+    return item ? JSON.parse(item) : fallback;
+  } catch (e) {
+    console.warn(`Failed to parse ${key}`, e);
+    return fallback;
+  }
+};
+
+const formatTime = (timestamp: number) => {
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).format(new Date(timestamp));
+};
+
+const formatDateHeader = (timestamp: number) => {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) return 'Today';
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(date);
+};
+
 function App() {
   const [appState, setAppState] = useState<'SPLASH' | 'PIN_ENTRY' | 'PIN_SETUP' | 'READY'>('SPLASH');
   const [pinInput, setPinInput] = useState('');
@@ -31,9 +78,9 @@ function App() {
   const [currentView, setCurrentView] = useState<View>(View.DASHBOARD);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showNewTipAlert, setShowNewTipAlert] = useState<WeeklyTip | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [isOfflineMode, setIsOfflineMode] = useState(!navigator.onLine);
+  const [isSyncingBackground, setIsSyncingBackground] = useState(false);
 
   useEffect(() => {
     const handleStatusChange = () => setIsOfflineMode(!navigator.onLine);
@@ -45,131 +92,65 @@ function App() {
     };
   }, []);
 
-  const [userProfile, setUserProfile] = useState<UserProfile>(() => {
-    const saved = localStorage.getItem('security_app_profile');
-    return saved ? JSON.parse(saved) : { name: 'Executive Director', phoneNumber: '', email: '', preferredChannel: 'WhatsApp' };
-  });
+  const [userProfile, setUserProfile] = useState<UserProfile>(() => 
+    safeParse('security_app_profile', { name: '', phoneNumber: '', email: '', preferredChannel: 'WhatsApp' })
+  );
 
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    const saved = localStorage.getItem('security_app_chat');
-    return saved ? JSON.parse(saved) : [{
+  const [messages, setMessages] = useState<ChatMessage[]>(() => 
+    safeParse('security_app_chat', [{
       id: 'welcome',
       role: 'model',
-      text: `Hello CEO ${userProfile.name ? userProfile.name : ''}. AntiRisk Intelligence Vault is active. How can I assist with your strategic security operations today?`,
-      timestamp: Date.now()
-    }];
-  });
+      text: `Hello CEO ${userProfile.name || 'Executive'}. AntiRisk Intelligence Vault is active.`,
+      timestamp: Date.now(),
+      isPinned: false
+    }])
+  );
 
-  const [storedReports, setStoredReports] = useState<StoredReport[]>(() => {
-    const saved = localStorage.getItem('security_app_reports');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [storedReports, setStoredReports] = useState<StoredReport[]>(() => 
+    safeParse('security_app_reports', [])
+  );
 
-  const [weeklyTips, setWeeklyTips] = useState<WeeklyTip[]>(() => {
-    const saved = localStorage.getItem('security_app_weekly_tips');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [weeklyTips, setWeeklyTips] = useState<WeeklyTip[]>(() => 
+    safeParse('security_app_weekly_tips', [])
+  );
 
-  const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeDocument[]>(() => {
-    const saved = localStorage.getItem('security_app_kb');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [savedTraining, setSavedTraining] = useState<StoredTrainingModule[]>(() => 
+    safeParse('security_app_training', [])
+  );
 
-  const [savedTraining, setSavedTraining] = useState<StoredTrainingModule[]>(() => {
-    const saved = localStorage.getItem('security_app_training');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [customSops, setCustomSops] = useState<Template[]>(() => {
-    const saved = localStorage.getItem('security_app_custom_sops');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [inputMessage, setInputMessage] = useState('');
-  const [isAdvisorThinking, setIsAdvisorThinking] = useState(false);
-  const [advisorViewMode, setAdvisorViewMode] = useState<'CHAT' | 'PINNED'>('CHAT');
-  const [showKbModal, setShowKbModal] = useState(false);
-  const [newDocTitle, setNewDocTitle] = useState('');
-  const [newDocContent, setNewDocContent] = useState('');
-  const [showSopModal, setShowSopModal] = useState(false);
-  const [newSopTitle, setNewSopTitle] = useState('');
-  const [newSopDesc, setNewSopDesc] = useState('');
-  const [newSopContent, setNewSopContent] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const auditFileInputRef = useRef<HTMLInputElement>(null);
+  const [customSops, setCustomSops] = useState<Template[]>(() => 
+    safeParse('security_app_custom_sops', [])
+  );
 
   const [trainingTopic, setTrainingTopic] = useState('');
   const [trainingWeek, setTrainingWeek] = useState<number>(1);
   const [trainingRole, setTrainingRole] = useState<SecurityRole>(SecurityRole.GUARD);
   const [trainingContent, setTrainingContent] = useState('');
-  const [trainingSources, setTrainingSources] = useState<Array<{ title: string; url: string }> | undefined>(undefined);
   const [isTrainingLoading, setIsTrainingLoading] = useState(false);
   const [isEditingTraining, setIsEditingTraining] = useState(false);
   const [activeTrainingId, setActiveTrainingId] = useState<string | null>(null);
-  const [trainingSidebarTab, setTrainingSidebarTab] = useState<'CATEGORIES' | 'DRAFTS'>('CATEGORIES');
   
-  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
-  const [isFetchingSuggestions, setIsFetchingSuggestions] = useState(false);
-  const [showTrainingSuggestions, setShowTrainingSuggestions] = useState(false);
-  const suggestionsRef = useRef<HTMLDivElement>(null);
+  const [inputMessage, setInputMessage] = useState('');
+  const [isAdvisorThinking, setIsAdvisorThinking] = useState(false);
+  const [advisorViewMode, setAdvisorViewMode] = useState<'CHAT' | 'PINNED'>('CHAT');
 
   const [toolkitTab, setToolkitTab] = useState<'TEMPLATES' | 'AUDIT'>('TEMPLATES');
-
-  const localSuggestions = useMemo(() => {
-    if (trainingTopic.trim().length < 2) return [];
-    const lower = trainingTopic.toLowerCase();
-    const matches: string[] = [];
-    Object.keys(SECURITY_TRAINING_DB).forEach(cat => {
-      if (cat.toLowerCase().includes(lower)) matches.push(cat);
-    });
-    Object.values(SECURITY_TRAINING_DB).flat().forEach(topic => {
-      if (topic.toLowerCase().includes(lower)) matches.push(topic);
-    });
-    return [...new Set(matches)].slice(0, 5);
-  }, [trainingTopic]);
-
-  useEffect(() => {
-    if (trainingTopic.trim().length < 3 || isOfflineMode || !showTrainingSuggestions) {
-      setAiSuggestions([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
-      setIsFetchingSuggestions(true);
-      try {
-        const suggestions = await fetchTopicSuggestions(trainingTopic);
-        setAiSuggestions(suggestions.filter(s => !localSuggestions.includes(s)));
-      } catch (err) {
-        console.error("AI fetch failed", err);
-      } finally {
-        setIsFetchingSuggestions(false);
-      }
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [trainingTopic, isOfflineMode, showTrainingSuggestions, localSuggestions]);
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (suggestionsRef.current && !suggestionsRef.current.contains(e.target as Node)) {
-        setShowTrainingSuggestions(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
   const [reportText, setReportText] = useState('');
   const [analysisResult, setAnalysisResult] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analyzerTab, setAnalyzerTab] = useState<'DAILY' | 'PATROL' | 'INCIDENT'>('DAILY');
+  const [showSopModal, setShowSopModal] = useState(false);
+  const [newSopTitle, setNewSopTitle] = useState('');
+  const [newSopContent, setNewSopContent] = useState('');
+  
   const [bpTopic, setBpTopic] = useState('');
   const [bpContent, setBpContent] = useState<{ text: string; sources?: Array<{ title: string; url: string }> } | null>(null);
   const [isBpLoading, setIsBpLoading] = useState(false);
-  const [isTipLoading, setIsTipLoading] = useState(false);
-
-  const [toolkitSearch, setToolkitSearch] = useState('');
 
   const [newsBlog, setNewsBlog] = useState<{ text: string; sources?: Array<{ title: string; url: string }> } | null>(null);
   const [isNewsLoading, setIsNewsLoading] = useState(false);
+
+  const [isTipLoading, setIsTipLoading] = useState(false);
+  const [weeklyTopicInput, setWeeklyTopicInput] = useState('');
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -177,31 +158,41 @@ function App() {
   useEffect(() => { localStorage.setItem('security_app_chat', JSON.stringify(messages)); chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { localStorage.setItem('security_app_reports', JSON.stringify(storedReports)); }, [storedReports]);
   useEffect(() => { localStorage.setItem('security_app_weekly_tips', JSON.stringify(weeklyTips)); }, [weeklyTips]);
-  useEffect(() => { localStorage.setItem('security_app_kb', JSON.stringify(knowledgeBase)); }, [knowledgeBase]);
   useEffect(() => { localStorage.setItem('security_app_training', JSON.stringify(savedTraining)); }, [savedTraining]);
   useEffect(() => { localStorage.setItem('security_app_custom_sops', JSON.stringify(customSops)); }, [customSops]);
 
+  const memoizedKbContext = useMemo(() => {
+    return customSops.map(s => `${s.title}: ${s.description}`).join('; ');
+  }, [customSops]);
+
+  const isProfileIncomplete = !userProfile.name || !userProfile.phoneNumber;
+
   useEffect(() => {
     if (appState === 'READY' && !isOfflineMode) {
-      const checkAutomation = async () => {
-        const lastAutoCheck = localStorage.getItem('security_app_last_auto_tip');
-        const today = new Date().toLocaleDateString();
-        if (lastAutoCheck === today) return; 
-        const mostRecentTip = weeklyTips[0];
-        const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
-        if (!mostRecentTip || (Date.now() - mostRecentTip.timestamp > sevenDaysInMs)) {
-           handleGenerateWeeklyTip();
+      const syncIntelligence = async () => {
+        setIsSyncingBackground(true);
+        const lastSync = localStorage.getItem('security_app_last_sync');
+        const now = Date.now();
+        if (!lastSync || now - parseInt(lastSync) > 1000 * 60 * 60 * 4) {
+          try {
+            await Promise.allSettled([
+              handleLoadNews()
+            ]);
+            localStorage.setItem('security_app_last_sync', now.toString());
+          } catch (e) {
+            console.error("Background sync failed", e);
+          }
         }
-        localStorage.setItem('security_app_last_auto_tip', today);
+        setIsSyncingBackground(false);
       };
-      checkAutomation();
+      syncIntelligence();
     }
-  }, [appState, isOfflineMode, weeklyTips]);
+  }, [appState, isOfflineMode]);
 
   useEffect(() => {
     if (appState === 'SPLASH') {
       const startTime = Date.now();
-      const duration = 2000;
+      const duration = 1500;
       const timer = setInterval(() => {
         const elapsed = Date.now() - startTime;
         const progress = Math.min((elapsed / duration) * 100, 100);
@@ -239,96 +230,67 @@ function App() {
 
   const handleError = (error: any) => {
     const errorStr = JSON.stringify(error).toUpperCase();
-    const isQuota = errorStr.includes('RESOURCE_EXHAUSTED') || errorStr.includes('429') || errorStr.includes('QUOTA') || errorStr.includes('LIMIT');
-    if (isQuota) {
-      setApiError("Intelligence Core under maximum load. Stabilization link active. If search fails, AI will fallback to internal core knowledge shortly.");
-    } else {
-      setApiError(`Communication Breach: ${error?.message || "Internal network instability."}`);
+    const isQuota = errorStr.includes('RESOURCE_EXHAUSTED') || errorStr.includes('429');
+    setApiError(isQuota ? "Intelligence Core busy. Automatic retry active." : `System Alert: ${error?.message || "Internal network error."}`);
+    setTimeout(() => setApiError(null), 8000);
+  };
+
+  const handleClearAdvisorHistory = () => {
+    if (window.confirm("Permanently wipe AI Advisor history?")) {
+      setMessages([{
+        id: 'welcome',
+        role: 'model',
+        text: `Hello CEO ${userProfile.name || 'Executive'}. AntiRisk Intelligence Vault reset.`,
+        timestamp: Date.now(),
+        isPinned: false
+      }]);
     }
-    setTimeout(() => setApiError(null), 10000);
+  };
+
+  const handleTogglePin = (id: string) => {
+    setMessages(prev => prev.map(msg => msg.id === id ? { ...msg, isPinned: !msg.isPinned } : msg));
   };
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || isOfflineMode) return;
-    setApiError(null);
-    const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text: inputMessage, timestamp: Date.now() };
+    const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text: inputMessage, timestamp: Date.now(), isPinned: false };
     const tempId = Date.now().toString() + 'ai';
     const initialAiMsg: ChatMessage = { id: tempId, role: 'model', text: '', timestamp: Date.now(), isPinned: false };
-    
     setMessages(prev => [...prev, userMsg, initialAiMsg]);
+    
     const currentInput = inputMessage;
     setInputMessage('');
     setIsAdvisorThinking(true);
-
     try {
-      await generateAdvisorStream(
-        messages, 
-        currentInput,
-        (streamedText) => {
-          setIsAdvisorThinking(false);
-          setMessages(prev => prev.map(msg => msg.id === tempId ? { ...msg, text: streamedText } : msg));
+      await generateAdvisorStream(messages, currentInput,
+        (streamedText) => { setMessages(prev => prev.map(msg => msg.id === tempId ? { ...msg, text: streamedText } : msg)); },
+        (sources, cached) => { 
+          setMessages(prev => prev.map(msg => msg.id === tempId ? { ...msg, sources, text: cached ? `⚡ (Instant Intelligence)\n\n${msg.text}` : msg.text } : msg)); 
         },
-        (sources) => {
-          setMessages(prev => prev.map(msg => msg.id === tempId ? { ...msg, sources } : msg));
-        }
+        memoizedKbContext
       );
-    } catch (err: any) { 
-      handleError(err);
-      setMessages(prev => prev.filter(msg => msg.id !== tempId));
-    } finally { 
-      setIsAdvisorThinking(false); 
-    }
-  };
-
-  const togglePinMessage = (messageId: string) => {
-    setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, isPinned: !msg.isPinned } : msg));
-  };
-
-  const handleAnalyzeReport = async () => {
-    if (!reportText || isOfflineMode) return;
-    setApiError(null); setIsAnalyzing(true);
-    try {
-      const auditType = analyzerTab === 'INCIDENT' ? 'INCIDENT' : (analyzerTab === 'PATROL' ? 'PATROL' : 'SHIFT');
-      const result = await analyzeReport(reportText, auditType);
-      setAnalysisResult(result);
-      setStoredReports(prev => [{ id: Date.now().toString(), timestamp: Date.now(), dateStr: new Date().toLocaleDateString(), content: reportText, analysis: result }, ...prev]);
-    } catch (err: any) { handleError(err); } finally { setIsAnalyzing(false); }
+    } catch (err) { handleError(err); setMessages(prev => prev.filter(msg => msg.id !== tempId)); } finally { setIsAdvisorThinking(false); }
   };
 
   const handleGenerateTraining = async () => {
     if (!trainingTopic || isOfflineMode) return;
-    setApiError(null); 
-    setIsTrainingLoading(true); 
-    setTrainingContent('');
-    setTrainingSources(undefined);
-    setShowTrainingSuggestions(false);
-    setActiveTrainingId(null);
-    setIsEditingTraining(false);
-    
+    setIsTrainingLoading(true); setTrainingContent(''); setActiveTrainingId(null); setIsEditingTraining(false);
     try {
-      await generateTrainingModuleStream(
-        trainingTopic, 
-        trainingWeek, 
-        trainingRole,
+      await generateTrainingModuleStream(trainingTopic, trainingWeek, trainingRole,
         (text) => setTrainingContent(text),
-        (sources) => setTrainingSources(sources)
+        () => {}
       );
-    } catch (err: any) { handleError(err); } finally { setIsTrainingLoading(false); }
+    } catch (err) { handleError(err); } finally { setIsTrainingLoading(false); }
   };
 
   const handleSaveTrainingDraft = () => {
     if (!trainingContent) return;
-    
     if (activeTrainingId) {
       setSavedTraining(prev => prev.map(t => t.id === activeTrainingId ? { ...t, content: trainingContent, timestamp: Date.now() } : t));
     } else {
       const newModule: StoredTrainingModule = {
-        id: Date.now().toString(),
-        topic: trainingTopic || "Untitled Module",
-        targetAudience: trainingRole,
-        content: trainingContent,
-        generatedDate: new Date().toLocaleDateString(),
-        timestamp: Date.now()
+        id: Date.now().toString(), topic: trainingTopic || "Untitled Module", targetAudience: trainingRole,
+        content: trainingContent, generatedDate: new Date().toLocaleDateString(), timestamp: Date.now()
       };
       setSavedTraining(prev => [newModule, ...prev]);
       setActiveTrainingId(newModule.id);
@@ -337,761 +299,651 @@ function App() {
   };
 
   const handleSelectSavedTraining = (module: StoredTrainingModule) => {
-    setTrainingTopic(module.topic);
-    setTrainingRole(module.targetAudience as SecurityRole);
-    setTrainingContent(module.content);
-    setActiveTrainingId(module.id);
-    setIsEditingTraining(false);
+    setTrainingTopic(module.topic); setTrainingRole(module.targetAudience as SecurityRole);
+    setTrainingContent(module.content); setActiveTrainingId(module.id); setIsEditingTraining(false);
+  };
+
+  const handleAnalyzeReport = async () => {
+    if (!reportText || isOfflineMode) return;
+    setIsAnalyzing(true);
+    try {
+      const result = await analyzeReportParallel(reportText);
+      setAnalysisResult(result);
+      setStoredReports(prev => [{ id: Date.now().toString(), timestamp: Date.now(), dateStr: new Date().toLocaleDateString(), content: reportText, analysis: result }, ...prev]);
+    } catch (err) { handleError(err); } finally { setIsAnalyzing(false); }
   };
 
   const handleFetchBP = async () => {
     if (isOfflineMode) return;
-    setApiError(null); 
-    setIsBpLoading(true);
-    setBpContent({ text: '', sources: undefined });
-
+    setIsBpLoading(true); setBpContent({ text: '', sources: undefined });
     try {
-      await fetchBestPracticesStream(
-        bpTopic,
+      await fetchBestPracticesStream(bpTopic,
         (text) => setBpContent(prev => ({ ...prev!, text })),
         (sources) => setBpContent(prev => ({ ...prev!, sources }))
       );
-    } catch (err: any) { handleError(err); } finally { setIsBpLoading(false); }
+    } catch (err) { handleError(err); } finally { setIsBpLoading(false); }
   };
 
   const handleGenerateWeeklyTip = async () => {
     if (isOfflineMode) return;
-    setApiError(null); setIsTipLoading(true);
+    setIsTipLoading(true);
     try {
-      const content = await generateWeeklyTip(weeklyTips);
+      const content = await generateWeeklyTip();
       const newTip: WeeklyTip = { 
-        id: Date.now().toString(), 
-        weekDate: new Date().toLocaleDateString(), 
-        topic: "Weekly Strategic Focus", 
-        content, 
-        isAutoGenerated: true, 
-        timestamp: Date.now() 
+        id: Date.now().toString(), weekDate: new Date().toLocaleDateString(), 
+        topic: weeklyTopicInput || "Weekly Strategic Focus", content, isAutoGenerated: true, timestamp: Date.now() 
       };
       setWeeklyTips(prev => [newTip, ...prev]);
-      setShowNewTipAlert(newTip);
-    } catch (err: any) { handleError(err); } finally { setIsTipLoading(false); }
+      setWeeklyTopicInput('');
+    } catch (err) { handleError(err); } finally { setIsTipLoading(false); }
   };
 
   const handleLoadNews = async () => {
-    setIsNewsLoading(true); setApiError(null);
-    try {
-      const news = await fetchSecurityNews();
-      setNewsBlog(news);
-    } catch (err: any) { handleError(err); } finally { setIsNewsLoading(false); }
-  };
-
-  const handleAddKbDocument = () => {
-    if (!newDocTitle || !newDocContent) return;
-    const newDoc: KnowledgeDocument = { id: Date.now().toString(), title: newDocTitle, content: newDocContent, dateAdded: new Date().toLocaleDateString() };
-    setKnowledgeBase(prev => [...prev, newDoc]);
-    setNewDocTitle(''); setNewDocContent(''); setShowKbModal(false);
+    setIsNewsLoading(true);
+    try { const news = await fetchSecurityNews(); setNewsBlog(news); } catch (err) { handleError(err); } finally { setIsNewsLoading(false); }
   };
 
   const handleAddCustomSop = () => {
     if (!newSopTitle || !newSopContent) return;
-    const newSop: Template = { id: Date.now().toString(), title: newSopTitle, description: newSopDesc || 'Custom Protocol', content: newSopContent };
+    const newSop: Template = { id: Date.now().toString(), title: newSopTitle, description: 'Custom Protocol', content: newSopContent };
     setCustomSops(prev => [newSop, ...prev]);
-    setNewSopTitle(''); setNewSopDesc(''); setNewSopContent(''); setShowSopModal(false);
+    setNewSopTitle(''); setNewSopContent(''); setShowSopModal(false);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result as string;
-      setNewSopContent(content);
-      if (!newSopTitle) setNewSopTitle(file.name.replace(/\.[^/.]+$/, ""));
-    };
-    reader.readAsText(file);
-  };
-
-  const handleAuditFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result as string;
-      setReportText(content);
-    };
-    reader.readAsText(file);
-  };
-
-  // --- Views ---
-
-  const renderDashboard = () => {
-    const menuItems = [
-      { id: View.ADVISOR, label: 'AI Advisor', desc: 'Strategic consultation.', icon: ShieldAlert, color: 'text-blue-400', bg: 'bg-blue-400/10' },
-      { id: View.NEWS_BLOG, label: 'News Blog', desc: 'Daily briefings.', icon: Newspaper, color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
-      { id: View.TRAINING, label: 'Training Builder', desc: '10M+ Database.', icon: BookOpen, color: 'text-purple-400', bg: 'bg-purple-400/10' },
-      { id: View.WEEKLY_TIPS, label: 'Directives', desc: 'Tactical briefings.', icon: Lightbulb, color: 'text-yellow-400', bg: 'bg-yellow-400/10' },
-      { id: View.TOOLKIT, label: 'Ops Vault', desc: 'Tactical SOPs.', icon: Briefcase, color: 'text-amber-400', bg: 'bg-amber-400/10', subTab: 'TEMPLATES' },
-      { id: View.TOOLKIT, label: 'Audit & Risk', desc: 'Vulnerabilities scan.', icon: Fingerprint, color: 'text-red-400', bg: 'bg-red-400/10', subTab: 'AUDIT' },
-      { id: View.BEST_PRACTICES, label: 'Global Trends', desc: 'ISO & Market shifts.', icon: Globe, color: 'text-cyan-400', bg: 'bg-cyan-400/10' },
-      { id: 'CEO_PROFILE', label: 'CEO Profile', desc: 'Manage identity.', icon: User, color: 'text-slate-400', bg: 'bg-slate-400/10' }
-    ];
-
-    return (
-      <div className="space-y-6 sm:space-y-10 max-w-6xl mx-auto pb-20 animate-in fade-in duration-700">
-        <div className="relative overflow-hidden bg-gradient-to-br from-[#122b6a] via-[#1a3a8a] to-[#0a1222] border border-blue-500/20 rounded-[1.5rem] sm:rounded-[3rem] p-5 sm:p-16 text-white shadow-2xl group">
-          <div className="absolute top-0 right-0 w-64 h-64 sm:w-96 sm:h-96 bg-blue-600/10 blur-[80px] sm:blur-[120px] -mr-32 -mt-32 rounded-full"></div>
-          <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 sm:gap-10">
-            <div className="space-y-3 sm:space-y-6 max-w-xl">
-              <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-500/20 rounded-full border border-blue-400/30 text-blue-300 text-[8px] sm:text-[10px] font-black uppercase tracking-widest">
-                <Activity size={10} className="animate-pulse" /> Operational Command Active
+  const renderDashboard = () => (
+    <div className="space-y-4 sm:space-y-10 max-w-6xl mx-auto pb-20 animate-in fade-in duration-500">
+      <div className="relative overflow-hidden bg-gradient-to-br from-[#122b6a] via-[#1a3a8a] to-[#0a1222] border border-blue-500/20 rounded-2xl sm:rounded-[3rem] p-5 sm:p-16 text-white shadow-2xl group">
+        <div className="absolute top-0 right-0 w-64 h-64 sm:w-96 sm:h-96 bg-blue-600/10 blur-[80px] sm:blur-[120px] -mr-32 -mt-32 rounded-full"></div>
+        <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-5 sm:gap-10">
+          <div className="space-y-2 sm:space-y-6 max-w-xl">
+            <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-500/20 rounded-full border border-blue-400/30 text-blue-300 text-[8px] sm:text-[10px] font-black uppercase tracking-widest">
+              <Activity size={10} className="animate-pulse" /> Command Active
+            </div>
+            <h2 className="text-xl sm:text-6xl font-black tracking-tighter leading-tight">Executive <span className="text-blue-400">Vault</span></h2>
+            <p className="text-blue-100/70 text-[10px] sm:text-xl font-medium leading-relaxed">Intelligence-led security operations control.</p>
+            {isSyncingBackground && (
+              <div className="flex items-center gap-2 text-[7px] sm:text-xs text-blue-400 font-bold bg-blue-400/10 w-fit px-3 py-1 rounded-full border border-blue-400/20">
+                <RefreshCw size={10} className="animate-spin" /> High-Speed Sync...
               </div>
-              <h2 className="text-2xl sm:text-6xl font-black tracking-tighter leading-tight">Executive Control <br className="hidden xs:block"/><span className="text-blue-400">Hub</span></h2>
-              <p className="text-blue-100/70 text-xs sm:text-xl font-medium leading-relaxed">Secure access to 10M training vibrations and tactical intelligence.</p>
-            </div>
-            <div className="flex flex-col gap-3 sm:gap-4 w-full md:w-auto">
-              <button onClick={() => setCurrentView(View.ADVISOR)} className="w-full md:px-10 py-4 sm:py-5 bg-white text-blue-900 rounded-xl sm:rounded-2xl font-black text-sm sm:text-lg hover:bg-blue-50 transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3">
-                <Sparkles size={18} /> Strategic Consult
-              </button>
-              <div className="flex gap-2 sm:gap-3">
-                <div className="flex-1 bg-slate-900/40 backdrop-blur-md border border-white/5 p-3 sm:p-4 rounded-xl sm:rounded-2xl">
-                  <p className="text-[7px] sm:text-[10px] font-black text-blue-400/60 uppercase tracking-widest mb-1">Audit</p>
-                  <p className="text-xs sm:text-lg font-bold">LOCKED</p>
-                </div>
-                <div className="flex-1 bg-slate-900/40 backdrop-blur-md border border-white/5 p-3 sm:p-4 rounded-xl sm:rounded-2xl">
-                  <p className="text-[7px] sm:text-[10px] font-black text-emerald-400/60 uppercase tracking-widest mb-1">Threat</p>
-                  <p className="text-xs sm:text-lg font-bold">STABLE</p>
-                </div>
-              </div>
-            </div>
+            )}
           </div>
-        </div>
-
-        <div className="space-y-4 sm:space-y-6">
-          <div className="flex items-center justify-between px-2">
-            <h3 className="text-[8px] sm:text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">Operational Menu</h3>
-            <span className="h-px flex-1 mx-3 sm:mx-6 bg-slate-800/60"></span>
-          </div>
-          
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-6">
-            {menuItems.map((item) => (
-              <button
-                key={item.label}
-                onClick={() => {
-                  if (item.id === 'CEO_PROFILE') setShowSettings(true);
-                  else {
-                    setCurrentView(item.id as View);
-                    if (item.subTab) setToolkitTab(item.subTab as 'TEMPLATES' | 'AUDIT');
-                  }
-                }}
-                className="group relative bg-[#1b2537] p-3.5 sm:p-8 rounded-[1.2rem] sm:rounded-[2.5rem] border border-slate-700/40 hover:border-blue-500/50 hover:bg-slate-800 transition-all duration-300 text-left flex flex-col h-full shadow-lg active:scale-[0.98]"
-              >
-                <div className={`w-9 h-9 sm:w-14 sm:h-14 ${item.bg} ${item.color} rounded-lg sm:rounded-2xl flex items-center justify-center mb-2.5 sm:mb-6 group-hover:scale-110 transition-transform duration-500`}>
-                  <item.icon size={18} className="sm:w-7 sm:h-7" />
-                </div>
-                <h3 className="text-xs sm:text-xl font-black text-white mb-0.5 sm:mb-1 tracking-tight group-hover:text-blue-400 transition-colors truncate">{item.label}</h3>
-                <p className="text-slate-400 text-[9px] sm:text-sm font-medium leading-relaxed flex-1 line-clamp-2">{item.desc}</p>
-                <div className="hidden sm:flex mt-6 items-center gap-2 text-[10px] font-black text-blue-500 uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all translate-x-[-10px] group-hover:translate-x-0">
-                  Access Vault <ChevronRight size={12} />
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-slate-900/40 border border-slate-800/60 p-4 sm:p-6 rounded-[1.2rem] sm:rounded-[2rem] flex flex-col sm:flex-row justify-between items-center gap-3 sm:gap-6">
-          <div className="flex items-center gap-4 sm:gap-6">
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-              <span className="text-[7px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest text-center sm:text-left">Global Verified</span>
-            </div>
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-blue-500 rounded-full"></span>
-              <span className="text-[7px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest text-center sm:text-left">Bank Sync</span>
-            </div>
-          </div>
-          <p className="text-[7px] sm:text-[10px] font-bold text-slate-600">AntiRisk v1.0.4.5</p>
+          <button onClick={() => setCurrentView(View.ADVISOR)} className="w-full md:w-auto md:px-10 py-3 sm:py-5 bg-white text-blue-900 rounded-xl sm:rounded-2xl font-black text-xs sm:text-lg hover:bg-blue-50 transition-all shadow-xl active:scale-95 flex items-center justify-center gap-2.5">
+            <Sparkles size={16} /> Strategic Consult
+          </button>
         </div>
       </div>
-    );
-  };
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
+        {[
+          { id: View.ADVISOR, label: 'AI Advisor', desc: 'Strategy Sync.', icon: ShieldAlert, color: 'text-blue-400', bg: 'bg-blue-400/10' },
+          { id: View.NEWS_BLOG, label: 'Security News', desc: 'Daily Brief.', icon: Newspaper, color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
+          { id: View.WEEKLY_TIPS, label: 'Training Tips', desc: 'Automated Curriculum.', icon: Lightbulb, color: 'text-amber-400', bg: 'bg-amber-400/10' },
+          { id: View.TOOLKIT, label: 'Ops Vault', desc: 'Audit & SOPs.', icon: Briefcase, color: 'text-purple-400', bg: 'bg-purple-400/10' }
+        ].map((item) => (
+          <button key={item.label} onClick={() => setView(item.id)} className="group bg-[#1b2537] p-3 sm:p-8 rounded-xl sm:rounded-[2.5rem] border border-slate-700/40 hover:border-blue-500/50 transition-all text-left flex flex-col h-full shadow-lg active:scale-[0.98]">
+            <div className={`w-8 h-8 sm:w-14 sm:h-14 ${item.bg} ${item.color} rounded-lg sm:rounded-2xl flex items-center justify-center mb-3 group-hover:scale-110 transition-transform`}>
+              <item.icon size={16} className="sm:size-28" />
+            </div>
+            <h3 className="text-[10px] sm:text-xl font-black text-white mb-0.5 tracking-tight truncate">{item.label}</h3>
+            <p className="text-slate-400 text-[8px] sm:text-sm font-medium leading-relaxed flex-1 line-clamp-2">{item.desc}</p>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderWeeklyTipsView = () => (
+    <div className="max-w-xl mx-auto space-y-4 pb-20 animate-in fade-in duration-300">
+      <div className="flex justify-between items-center mb-6">
+        <div className="space-y-1">
+          <h2 className="text-xl font-bold text-white flex items-center gap-3">
+            <Lightbulb className="text-amber-500 fill-amber-500/20" size={24} /> 
+            Weekly Training Tips
+          </h2>
+          <p className="text-slate-400 text-[11px]">
+            Automated weekly curriculum for guards and supervisors.
+          </p>
+        </div>
+        <button 
+          onClick={() => setCurrentView(View.DASHBOARD)}
+          className="p-2 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-all"
+        >
+          <X size={20} />
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        <input 
+          value={weeklyTopicInput} 
+          onChange={(e) => setWeeklyTopicInput(e.target.value)}
+          placeholder="Specific Topic (Optional)"
+          className="w-full bg-[#1b2537] border border-slate-800 rounded-lg px-4 py-3 text-slate-300 text-xs focus:outline-none focus:border-amber-500/50"
+        />
+        <div className="flex gap-2">
+          <button className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-3 rounded-lg text-xs font-bold transition-all">
+            Create Custom
+          </button>
+          <button 
+            onClick={handleGenerateWeeklyTip}
+            disabled={isTipLoading}
+            className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-amber-900/20"
+          >
+            {isTipLoading ? <RefreshCw className="animate-spin" size={14} /> : <Plus size={16} />}
+            Generate New Week
+          </button>
+        </div>
+      </div>
+
+      {isProfileIncomplete && (
+        <div 
+          onClick={() => setShowSettings(true)}
+          className="bg-red-900/20 border border-red-900/40 rounded-xl p-4 flex items-center gap-4 cursor-pointer group active:scale-[0.98] transition-all"
+        >
+          <div className="p-2 bg-red-900/30 rounded-lg text-red-500">
+            <Bell size={18} />
+          </div>
+          <div className="flex-1">
+            <p className="text-[11px] text-red-200/90 leading-tight">
+              CEO Alert Profile Incomplete. Configure settings to receive automatic push notifications.
+            </p>
+          </div>
+          <ChevronRight size={18} className="text-red-500/50 group-hover:text-red-500 transition-colors" />
+        </div>
+      )}
+
+      <div className="bg-[#1b2537] rounded-3xl border border-slate-800/50 p-10 flex flex-col items-center justify-center text-center space-y-6 min-h-[400px] relative overflow-hidden">
+        {weeklyTips.length > 0 ? (
+          <div className="w-full text-left space-y-4">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-white font-bold text-lg">{weeklyTips[0].topic}</h3>
+              <ShareButton title={weeklyTips[0].topic} content={weeklyTips[0].content} view={View.WEEKLY_TIPS} />
+            </div>
+            <div className="max-h-[350px] overflow-y-auto scrollbar-hide">
+              <MarkdownRenderer content={weeklyTips[0].content} />
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="w-20 h-20 bg-slate-800/30 rounded-full flex items-center justify-center mb-4">
+              <Lightbulb size={40} className="text-slate-600/50" />
+            </div>
+            <div className="space-y-3 relative z-10">
+              <h3 className="text-white font-bold text-xl">No Training Tips Generated Yet</h3>
+              <p className="text-slate-400 text-[12px] leading-relaxed max-w-[280px] mx-auto">
+                Start by generating this week's security focus. The AI will use global standards to create a complete briefing.
+              </p>
+            </div>
+            <button 
+              onClick={handleGenerateWeeklyTip}
+              className="bg-amber-600 hover:bg-amber-700 text-white px-10 py-4 rounded-xl text-sm font-bold shadow-xl shadow-amber-900/30 transition-all active:scale-95"
+            >
+              Start Automation
+            </button>
+          </>
+        )}
+      </div>
+
+      <div className="bg-[#1b2537] rounded-2xl border border-slate-800/50 overflow-hidden">
+        <div className="p-4 border-b border-slate-800/50 flex items-center gap-3">
+          <Calendar size={18} className="text-slate-500" />
+          <h4 className="text-sm font-bold text-white">Training Archive</h4>
+        </div>
+        <div className="p-8">
+          {weeklyTips.length > 1 ? (
+            <div className="space-y-2">
+              {weeklyTips.slice(1).map(tip => (
+                <button key={tip.id} className="w-full text-left p-3 rounded-xl bg-slate-900/50 border border-slate-800 text-xs font-bold text-slate-400 truncate">
+                  {tip.weekDate}: {tip.topic}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-slate-600 text-[12px] italic text-center">
+              Past trainings will appear here.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   const renderAdvisor = () => (
-    <div className="flex flex-col h-full max-w-4xl mx-auto bg-[#1b2537]/50 rounded-[1.5rem] sm:rounded-[2rem] border border-slate-700/50 overflow-hidden shadow-xl">
-      <div className="p-3.5 sm:p-6 border-b border-slate-700/50 bg-[#0a1222]/40 flex flex-col gap-3 sm:gap-6">
-        <div className="flex justify-between items-center"><h2 className="text-xs sm:text-base font-bold text-white flex items-center gap-2.5 sm:gap-3"><ShieldAlert className="text-blue-400" size={18} /> AI Advisor</h2><button onClick={() => setShowKbModal(true)} className="text-[7px] sm:text-[8px] font-black text-blue-400 bg-blue-400/10 px-2.5 py-1.5 rounded-lg uppercase tracking-widest border border-blue-400/20">Archive</button></div>
-        <div className="flex gap-1.5 p-1 bg-slate-900/60 rounded-xl border border-slate-800 w-fit">
-          <button onClick={() => setAdvisorViewMode('CHAT')} className={`px-4 sm:px-6 py-1.5 rounded-lg font-bold text-[9px] sm:text-xs transition-all ${advisorViewMode === 'CHAT' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}>Direct Consult</button>
-          <button onClick={() => setAdvisorViewMode('PINNED')} className={`px-4 sm:px-6 py-1.5 rounded-lg font-bold text-[9px] sm:text-xs flex items-center gap-1.5 sm:gap-2 transition-all ${advisorViewMode === 'PINNED' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}>Briefs {messages.filter(m => m.isPinned).length > 0 && <span className="bg-slate-900/50 px-1.5 py-0.5 rounded text-[8px] sm:text-[10px]">{messages.filter(m => m.isPinned).length}</span>}</button>
+    <div className="flex flex-col h-full max-w-4xl mx-auto bg-[#1b2537]/50 rounded-xl sm:rounded-[1.5rem] border border-slate-700/50 overflow-hidden shadow-xl animate-in slide-in-from-bottom-4 duration-300">
+      <div className="p-3 sm:p-6 border-b border-slate-700/50 bg-[#0a1222]/40 flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={() => setCurrentView(View.DASHBOARD)}
+            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all"
+            title="Exit Advisor"
+          >
+            <ArrowLeft size={18} />
+          </button>
+          <h2 className="text-xs sm:text-base font-bold text-white flex items-center gap-2.5">
+            <ShieldAlert className="text-blue-400" size={16} /> AI Advisor
+          </h2>
+        </div>
+        <div className="flex items-center gap-2 sm:gap-4">
+          <div className="flex gap-1 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
+            <button onClick={() => setAdvisorViewMode('CHAT')} className={`px-2 sm:px-3 py-1.5 rounded-md font-bold text-[9px] sm:text-xs transition-all ${advisorViewMode === 'CHAT' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>Chat</button>
+            <button onClick={() => setAdvisorViewMode('PINNED')} className={`px-2 sm:px-3 py-1.5 rounded-md font-bold text-[9px] sm:text-xs transition-all ${advisorViewMode === 'PINNED' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>Pinned</button>
+          </div>
+          <button 
+            onClick={handleClearAdvisorHistory}
+            className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"
+            title="Clear Chat History"
+          >
+            <Trash2 size={18} />
+          </button>
+          <button 
+            onClick={() => setCurrentView(View.DASHBOARD)}
+            className="p-2 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-all"
+            title="Close"
+          >
+            <X size={18} />
+          </button>
         </div>
       </div>
-      {advisorViewMode === 'CHAT' ? (
-        <div className="flex-1 flex flex-col min-h-0">
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-6 scrollbar-hide">
-            {messages.map(msg => (
-              <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                <div className={`group relative max-w-[92%] sm:max-w-[85%] p-3.5 sm:p-5 rounded-2xl ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-br-none shadow-md' : 'bg-slate-800 text-slate-100 rounded-bl-none border border-slate-700 shadow-sm'}`}>
-                  {msg.role === 'model' && msg.text && <button onClick={() => togglePinMessage(msg.id)} className={`absolute -right-6 sm:-right-8 top-0 p-1.5 transition-all ${msg.isPinned ? 'text-yellow-400' : 'text-slate-600 sm:opacity-0 sm:group-hover:opacity-100'}`}>{msg.isPinned ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}</button>}
-                  {msg.role === 'model' && !msg.text ? (
-                     <div className="flex gap-1.5 py-2">
-                       <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></div>
-                       <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce delay-100"></div>
-                       <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce delay-200"></div>
-                     </div>
-                  ) : (
-                    <MarkdownRenderer content={msg.text} />
+
+      <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-6 scrollbar-hide">
+        {advisorViewMode === 'CHAT' ? (
+          messages.length > 0 ? (
+            messages.map((msg, index) => {
+              const showDateHeader = index === 0 || 
+                new Date(messages[index-1].timestamp).toDateString() !== new Date(msg.timestamp).toDateString();
+              
+              return (
+                <React.Fragment key={msg.id}>
+                  {showDateHeader && (
+                    <div className="flex justify-center my-4">
+                      <span className="px-3 py-1 rounded-full bg-slate-800/80 text-[10px] font-bold text-slate-400 uppercase tracking-widest border border-slate-700/50">
+                        {formatDateHeader(msg.timestamp)}
+                      </span>
+                    </div>
                   )}
+                  <div className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                    <div className={`group relative max-w-[92%] sm:max-w-[85%] p-4 rounded-2xl ${
+                      msg.role === 'user' 
+                        ? 'bg-blue-600 text-white rounded-br-none shadow-lg' 
+                        : 'bg-slate-800 text-slate-100 rounded-bl-none border border-slate-700 shadow-sm'
+                    }`}>
+                      {msg.role === 'model' && (
+                        <button 
+                          onClick={() => handleTogglePin(msg.id)}
+                          className={`absolute top-3 right-3 p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${
+                            msg.isPinned ? 'text-blue-400 bg-blue-400/10 opacity-100' : 'text-slate-500 hover:text-blue-400 hover:bg-blue-400/10'
+                          }`}
+                          title={msg.isPinned ? "Unpin Intelligence" : "Pin Intelligence"}
+                        >
+                          <Bookmark size={14} fill={msg.isPinned ? "currentColor" : "none"} />
+                        </button>
+                      )}
+
+                      {msg.role === 'model' && !msg.text ? (
+                        <div className="flex gap-1.5 py-2">
+                          <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></div>
+                          <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce delay-100"></div>
+                          <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce delay-200"></div>
+                        </div>
+                      ) : (
+                        <MarkdownRenderer content={msg.text} />
+                      )}
+                      
+                      <div className={`mt-2 flex items-center gap-1.5 text-[9px] font-medium ${
+                        msg.role === 'user' ? 'text-blue-100/60 justify-end' : 'text-slate-500 justify-start'
+                      }`}>
+                        <Clock size={10} />
+                        {formatTime(msg.timestamp)}
+                      </div>
+                    </div>
+                  </div>
+                </React.Fragment>
+              );
+            })
+          ) : null
+        ) : (
+          messages.filter(m => m.isPinned).length > 0 ? (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 mb-4 text-[10px] font-black text-blue-400 uppercase tracking-widest border-b border-slate-800 pb-2">
+                <Bookmark size={14} fill="currentColor" /> Pinned Strategic Intelligence
+              </div>
+              {messages.filter(m => m.isPinned).map(msg => (
+                <div key={msg.id} className="group relative bg-[#1b2537] p-5 rounded-2xl border border-slate-700/50 shadow-lg animate-in fade-in duration-300">
+                  <button 
+                    onClick={() => handleTogglePin(msg.id)}
+                    className="absolute top-3 right-3 p-1.5 rounded-lg text-blue-400 bg-blue-400/10 hover:text-red-400 hover:bg-red-400/10 transition-all opacity-0 group-hover:opacity-100"
+                    title="Remove from Pinned"
+                  >
+                    <PinOff size={14} />
+                  </button>
+                  <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-2">
+                    <span className="text-[10px] text-slate-500 font-bold flex items-center gap-2">
+                      <Calendar size={10} />
+                      {new Date(msg.timestamp).toLocaleString()}
+                    </span>
+                  </div>
+                  <MarkdownRenderer content={msg.text} />
                 </div>
-              </div>
-            ))}
-            {isAdvisorThinking && <div className="flex gap-1.5 p-3 bg-slate-800 rounded-xl w-fit animate-pulse border border-slate-700/50"><div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></div><div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce delay-100"></div></div>}
-            <div ref={chatEndRef} />
-          </div>
-          <div className="p-3 sm:p-6 border-t border-slate-700/50 flex gap-2 sm:gap-3 bg-[#0a1222]/40 backdrop-blur-md">
-            <input 
-              disabled={isOfflineMode} 
-              value={inputMessage} 
-              onChange={(e) => setInputMessage(e.target.value)} 
-              onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()} 
-              placeholder="Advisor sync..." 
-              className="flex-1 bg-slate-900/50 border border-slate-700 rounded-[0.8rem] sm:rounded-2xl px-4 sm:px-6 py-2.5 sm:py-4 text-white focus:outline-none focus:border-blue-500 text-xs sm:text-sm" 
-            />
-            <button 
-              onClick={handleSendMessage} 
-              disabled={!inputMessage.trim() || isAdvisorThinking || isOfflineMode} 
-              className="bg-blue-600 hover:bg-blue-700 text-white p-2.5 sm:p-4 rounded-[0.8rem] sm:rounded-2xl shadow-lg active:scale-95 transition-all"
-            >
-              <Send size={18} className="sm:size-20" />
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="flex-1 overflow-y-auto p-4 sm:p-10 space-y-6 sm:space-y-8 scrollbar-hide">
-          {messages.filter(m => m.isPinned).length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center opacity-20 text-center gap-4 py-20"><PinOff size={48}/><p className="text-xs sm:text-sm font-bold">No pinned executive briefs.</p></div>
+              ))}
+            </div>
           ) : (
-            messages.filter(m => m.isPinned).map(msg => (
-              <div key={msg.id} className="bg-[#1b2537] rounded-[1.2rem] sm:rounded-[2rem] border border-slate-700/50 overflow-hidden shadow-lg p-4 sm:p-8">
-                <div className="flex justify-between items-center mb-3 sm:mb-6"><h3 className="text-[10px] sm:text-sm font-bold text-white flex items-center gap-2"><Pin size={14} className="text-yellow-400" /> Strategic Brief</h3><ShareButton content={msg.text} title="Executive Brief" /></div>
-                <MarkdownRenderer content={msg.text} />
+            <div className="h-full flex flex-col items-center justify-center py-20 opacity-20 text-center">
+              <Bookmark size={40} className="mx-auto mb-4" />
+              <div className="space-y-1">
+                <p className="text-sm font-bold">No pinned intelligence briefing.</p>
+                <p className="text-[10px] max-w-[200px] mx-auto">Hover over an AI Advisor message and click the bookmark icon to pin it here.</p>
               </div>
-            ))
-          )}
+            </div>
+          )
+        )}
+        <div ref={chatEndRef} />
+      </div>
+
+      {advisorViewMode === 'CHAT' && (
+        <div className="p-3 border-t border-slate-700/50 flex gap-2 bg-[#0a1222]/40 backdrop-blur-md">
+          <input 
+            value={inputMessage} 
+            onChange={(e) => setInputMessage(e.target.value)} 
+            onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()} 
+            placeholder="Executive briefing request..." 
+            className="flex-1 bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-2 text-white focus:outline-none focus:border-blue-500 text-xs sm:text-sm h-11" 
+          />
+          <button 
+            onClick={handleSendMessage} 
+            disabled={!inputMessage.trim() || isAdvisorThinking} 
+            className="bg-blue-600 hover:bg-blue-700 text-white w-11 h-11 rounded-xl shadow-lg active:scale-90 transition-all flex items-center justify-center shrink-0 disabled:opacity-50 disabled:active:scale-100"
+          >
+            {isAdvisorThinking ? <RefreshCw className="animate-spin" size={18} /> : <Send size={18} />}
+          </button>
         </div>
       )}
     </div>
   );
 
-  const renderTrainingView = () => (
-    <div className="flex flex-col lg:grid lg:grid-cols-12 gap-5 h-full max-w-7xl mx-auto">
-      <div className="lg:col-span-4 flex flex-col gap-5">
-        <div className="bg-[#1b2537] p-5 sm:p-8 rounded-[1.5rem] sm:rounded-[2rem] border border-slate-700/50 shadow-lg relative">
-          <div className="absolute -top-2.5 -right-2 bg-blue-600 text-[8px] sm:text-[10px] font-black px-2.5 py-1 rounded-full shadow-lg z-10 border border-blue-400/30 animate-pulse uppercase tracking-widest">10M+ Bank</div>
-          <h2 className="text-lg sm:text-2xl font-bold text-white mb-4 sm:mb-6 flex items-center gap-3"><BookOpen size={20} className="text-emerald-400 sm:size-24" /> Training Builder</h2>
-          <div className="space-y-3.5 sm:space-y-4">
-            <div className="space-y-1 relative" ref={suggestionsRef}>
-              <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Topic Intelligence</label>
-              <div className="relative">
-                <input 
-                  value={trainingTopic} 
-                  onChange={(e) => {
-                    setTrainingTopic(e.target.value);
-                    setShowTrainingSuggestions(true);
-                  }} 
-                  onFocus={() => setShowTrainingSuggestions(true)}
-                  className="w-full bg-slate-900/50 border border-slate-700 rounded-xl sm:rounded-2xl px-4 py-2.5 sm:px-5 sm:py-3 text-white outline-none focus:border-blue-500 transition-all text-xs sm:text-base pr-9" 
-                  placeholder="Query Core Database..." 
-                />
-                <div className="absolute right-3.5 top-1/2 -translate-y-1/2">
-                  {isFetchingSuggestions ? (
-                    <RefreshCw size={14} className="text-blue-500 animate-spin" />
-                  ) : (
-                    <Zap size={14} className={`${trainingTopic.length > 2 ? 'text-blue-400' : 'text-slate-600'}`} />
-                  )}
-                </div>
-              </div>
-              
-              {showTrainingSuggestions && (localSuggestions.length > 0 || aiSuggestions.length > 0) && (
-                <div className="absolute top-[calc(100%+6px)] left-0 right-0 bg-[#0a1222]/95 backdrop-blur-xl border border-slate-700 rounded-xl sm:rounded-2xl shadow-2xl z-[50] overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 ring-1 ring-blue-500/20">
-                  {localSuggestions.length > 0 && (
-                    <div className="py-1.5">
-                      <div className="px-3.5 py-1 text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-                        <Database size={9} /> Local Hits
-                      </div>
-                      {localSuggestions.map((suggestion, idx) => (
-                        <button key={`local-${idx}`} onClick={() => { setTrainingTopic(suggestion); setShowTrainingSuggestions(false); }} className="w-full text-left px-3.5 py-2 text-[10px] sm:text-sm font-bold text-slate-300 hover:bg-blue-600/10 hover:text-blue-400 transition-colors flex items-center gap-2.5">
-                          <Check size={12} className="shrink-0 text-emerald-500 opacity-60" />
-                          <span className="truncate">{suggestion}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {aiSuggestions.length > 0 && (
-                    <div className="py-1.5 border-t border-slate-800">
-                      <div className="px-3.5 py-1 text-[7px] sm:text-[8px] font-black text-blue-500 uppercase tracking-widest flex items-center gap-1.5">
-                        <Sparkles size={9} /> AI Variants
-                      </div>
-                      {aiSuggestions.map((suggestion, idx) => (
-                        <button key={`ai-${idx}`} onClick={() => { setTrainingTopic(suggestion); setShowTrainingSuggestions(false); }} className="w-full text-left px-3.5 py-2 text-[10px] sm:text-sm font-bold text-slate-300 hover:bg-blue-600/10 hover:text-blue-400 transition-colors flex items-center gap-2.5">
-                          <Wand2 size={12} className="shrink-0 text-blue-400 opacity-60" />
-                          <span className="truncate">{suggestion}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            
-            <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
-              <div className="space-y-1">
-                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Role</label>
-                <select value={trainingRole} onChange={(e) => setTrainingRole(e.target.value as SecurityRole)} className="w-full bg-slate-900/40 border border-slate-700 rounded-lg sm:rounded-xl px-3 py-2 text-[10px] sm:text-xs font-bold text-slate-300 focus:border-blue-500 outline-none">
-                  <option value={SecurityRole.GUARD}>Guard</option>
-                  <option value={SecurityRole.SUPERVISOR}>Supervisor</option>
-                  <option value={SecurityRole.GEN_SUPERVISOR}>Director</option>
-                </select>
-              </div>
-              <div className="space-y-1">
-                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Week</label>
-                <select value={trainingWeek} onChange={(e) => setTrainingWeek(parseInt(e.target.value))} className="w-full bg-slate-900/40 border border-slate-700 rounded-lg sm:rounded-xl px-3 py-2 text-[10px] sm:text-xs font-bold text-slate-300 focus:border-blue-500 outline-none">
-                  <option value={1}>Week 1</option>
-                  <option value={2}>Week 2</option>
-                  <option value={3}>Week 3</option>
-                  <option value={4}>Week 4</option>
-                </select>
-              </div>
-            </div>
-
-            <button 
-              onClick={handleGenerateTraining} 
-              disabled={isTrainingLoading || !trainingTopic} 
-              className={`w-full py-3.5 sm:py-4 rounded-xl font-bold text-white shadow-lg flex items-center justify-center gap-2.5 transition-all ${trainingTopic ? 'bg-blue-600 hover:bg-blue-700 active:scale-95' : 'bg-slate-800 text-slate-500 cursor-not-allowed text-xs'}`}
-            >
-              {isTrainingLoading ? <RefreshCw className="animate-spin" size={18} /> : <Sparkles size={18} />}
-              Generate Brief
-            </button>
+  const renderBestPracticesView = () => (
+    <div className="max-w-4xl mx-auto space-y-6 pb-20 animate-in fade-in duration-500">
+      <div className="relative overflow-hidden bg-[#1b2537] border border-slate-700/50 rounded-2xl p-6 sm:p-8 flex flex-col sm:flex-row justify-between items-center gap-6 shadow-2xl">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 blur-3xl rounded-full -mr-16 -mt-16"></div>
+        <div className="space-y-1.5 text-center sm:text-left z-10">
+          <div className="flex items-center gap-2 mb-2 justify-center sm:justify-start">
+             <span className="flex h-2 w-2 rounded-full bg-blue-500 animate-ping"></span>
+             <span className="text-[10px] font-black uppercase text-blue-400 tracking-[0.2em]">Regulatory Intelligence Hub</span>
           </div>
+          <h2 className="text-xl sm:text-3xl font-black text-white flex items-center gap-3">
+            <Globe className="text-blue-500" size={28} /> Global Security Trends
+          </h2>
+          <p className="text-slate-400 text-xs font-medium">Real-time NSCDC, NIMASA, ISO & ASIS Updates.</p>
         </div>
-        <div className="bg-[#1b2537] rounded-[1.5rem] sm:rounded-[2rem] border border-slate-700/50 flex-1 flex flex-col overflow-hidden shadow-inner hidden lg:flex">
-          <div className="flex bg-slate-900/60 border-b border-slate-700/50">
+        <div className="flex flex-col w-full sm:w-auto gap-3 z-10">
+          <div className="flex gap-2">
             <button 
-              onClick={() => setTrainingSidebarTab('CATEGORIES')}
-              className={`flex-1 py-3 text-[9px] font-black uppercase tracking-widest transition-all ${trainingSidebarTab === 'CATEGORIES' ? 'text-blue-400 bg-blue-400/5 shadow-[inset_0_-2px_0_#3b82f6]' : 'text-slate-500 hover:text-slate-300'}`}
+              onClick={handleFetchBP} 
+              disabled={isBpLoading} 
+              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-8 py-3.5 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition-all shadow-lg active:scale-95 ring-2 ring-blue-500/20"
             >
-              Categories
+              {isBpLoading ? <RefreshCw className="animate-spin" size={14} /> : <Zap size={14} />} 
+              Sync Bulletins
             </button>
             <button 
-              onClick={() => setTrainingSidebarTab('DRAFTS')}
-              className={`flex-1 py-3 text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${trainingSidebarTab === 'DRAFTS' ? 'text-blue-400 bg-blue-400/5 shadow-[inset_0_-2px_0_#3b82f6]' : 'text-slate-500 hover:text-slate-300'}`}
+              onClick={() => setCurrentView(View.DASHBOARD)}
+              className="p-3.5 bg-slate-800 text-slate-300 hover:text-white rounded-xl active:scale-90 transition-all border border-slate-700/50"
             >
-              Drafts {savedTraining.length > 0 && <span className="bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded-full text-[8px] font-black">{savedTraining.length}</span>}
+              <X size={18} />
             </button>
-          </div>
-          
-          <div className="flex-1 overflow-y-auto p-3 sm:p-4 scrollbar-hide">
-            {trainingSidebarTab === 'CATEGORIES' ? (
-              <div className="space-y-1.5">
-                {Object.keys(SECURITY_TRAINING_DB).map(cat => (
-                  <button key={cat} onClick={() => { setTrainingTopic(cat); setShowTrainingSuggestions(false); }} className={`w-full text-left p-2.5 rounded-xl text-xs font-bold transition-all border ${trainingTopic === cat ? 'bg-blue-600/20 border-blue-500 text-blue-400 shadow-lg' : 'bg-slate-800/20 text-slate-300 hover:bg-slate-800 border-slate-700/30'}`}>{cat}</button>
-                ))}
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {savedTraining.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center py-12 text-center gap-3 opacity-20">
-                    <History size={40} />
-                    <p className="text-[10px] font-black uppercase tracking-widest leading-relaxed">Vault History Empty</p>
-                  </div>
-                ) : (
-                  savedTraining.map(item => (
-                    <div key={item.id} className="group relative">
-                      <button 
-                        onClick={() => handleSelectSavedTraining(item)}
-                        className={`w-full text-left p-3.5 rounded-2xl text-[11px] font-bold transition-all border ${activeTrainingId === item.id ? 'bg-blue-600/20 border-blue-500 text-blue-400 shadow-lg' : 'bg-slate-900/40 text-slate-400 hover:bg-slate-800 border-slate-700/30'}`}
-                      >
-                        <div className="truncate mb-1.5 text-slate-200">{item.topic}</div>
-                        <div className="flex justify-between items-center text-[8px] font-black uppercase tracking-tighter opacity-60">
-                          <span className="flex items-center gap-1"><Calendar size={10} /> {item.generatedDate}</span>
-                          <span className="bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">{item.targetAudience.split(' ')[0]}</span>
-                        </div>
-                      </button>
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); setSavedTraining(prev => prev.filter(t => t.id !== item.id)); if(activeTrainingId === item.id) setActiveTrainingId(null); }}
-                        className="absolute top-2 right-2 p-1.5 text-slate-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all active:scale-90"
-                        title="Delete Draft"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
           </div>
         </div>
       </div>
-      <div className="lg:col-span-8 flex flex-col gap-5 min-h-[280px]">
-        <div className="bg-[#1b2537] rounded-[1.5rem] sm:rounded-[2.5rem] border border-slate-700/50 overflow-hidden flex flex-col flex-1 shadow-2xl">
-          <div className="p-4 sm:p-5 bg-slate-900/40 border-b border-slate-700/50 flex justify-between items-center">
-            <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-2.5">
-              <ShieldCheck className="text-blue-400" size={18} /> 
-              {activeTrainingId ? 'Operational Brief (Modified)' : 'Operational Brief'}
-            </h3>
-            <div className="flex items-center gap-2 sm:gap-3">
-              {trainingContent && (
-                <>
-                  <button 
-                    onClick={() => setIsEditingTraining(!isEditingTraining)}
-                    className={`p-2 rounded-lg transition-all flex items-center gap-2 ${isEditingTraining ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40' : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'}`}
-                    title={isEditingTraining ? "View Result" : "Edit Module"}
-                  >
-                    <Edit size={16} />
-                    <span className="hidden sm:inline text-[10px] font-bold uppercase tracking-wider">{isEditingTraining ? 'Preview' : 'Edit'}</span>
-                  </button>
-                  <button 
-                    onClick={handleSaveTrainingDraft}
-                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-lg active:scale-95 border border-emerald-500/30"
-                    title="Save to Drafts"
-                  >
-                    <Save size={14} /> 
-                    <span className="hidden sm:inline uppercase tracking-wider">{activeTrainingId ? 'Update' : 'Save Draft'}</span>
-                  </button>
-                  <div className="w-px h-6 bg-slate-700/50 mx-1 hidden sm:block"></div>
-                  <ShareButton content={trainingContent} title={`${trainingTopic} - Week ${trainingWeek}`} />
-                </>
-              )}
-            </div>
-          </div>
-          <div className="flex-1 p-4 sm:p-8 overflow-y-auto bg-slate-900/10 scrollbar-hide">
-            {isEditingTraining ? (
-              <textarea 
-                value={trainingContent}
-                onChange={(e) => setTrainingContent(e.target.value)}
-                className="w-full h-full min-h-[500px] bg-[#0a1222]/50 border border-slate-700/50 rounded-2xl p-6 text-slate-300 font-mono text-xs sm:text-sm focus:border-blue-500 outline-none resize-none shadow-inner"
-                placeholder="Edit module content..."
-              />
-            ) : (
-              trainingContent ? (
-                <MarkdownRenderer content={trainingContent} />
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center opacity-30 italic text-center gap-3 py-10 sm:py-12">
-                  <Target size={50} className="sm:size-60" />
-                  <p className="text-xs sm:text-lg px-6">Audit the 10M+ Database to generate briefings.</p>
-                </div>
-              )
-            )}
-            {isTrainingLoading && !trainingContent && (
-               <div className="flex flex-col items-center justify-center h-full py-10 sm:py-12 gap-3.5 animate-pulse">
-                 <RefreshCw className="text-blue-500 animate-spin" size={28} sm:size={32} />
-                 <p className="text-slate-400 text-[8px] sm:text-[10px] font-black uppercase tracking-widest">Engaging Vault Core...</p>
+
+      <div className="bg-[#1b2537] rounded-3xl border border-slate-800/50 shadow-2xl overflow-hidden flex flex-col min-h-[500px]">
+        {isBpLoading ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-20 space-y-6">
+            <div className="relative">
+               <Zap className="text-blue-500 animate-pulse" size={64} />
+               <div className="absolute inset-0 flex items-center justify-center -mb-16">
+                 <RefreshCw className="text-blue-400/50 animate-spin" size={24} />
                </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderBestPractices = () => (
-    <div className="flex flex-col h-full max-w-5xl mx-auto space-y-5 sm:space-y-8 animate-in fade-in">
-      <div className="bg-[#1b2537] p-5 sm:p-10 rounded-[1.5rem] sm:rounded-[2.5rem] border border-slate-700/50 shadow-lg flex flex-col md:flex-row justify-between items-center gap-5 sm:gap-6">
-        <div className="flex-1 space-y-1.5 sm:space-y-2 text-center md:text-left">
-          <h2 className="text-lg sm:text-3xl font-black text-white flex items-center justify-center md:justify-start gap-3.5"><Globe className="text-cyan-400" size={24} sm:size={28} /> Global Trends</h2>
-          <p className="text-slate-400 text-xs sm:text-lg font-medium">Strategic intelligence on ISO 18788, ASIS, and industrial security shifts.</p>
-        </div>
-        <div className="flex flex-col sm:flex-row w-full md:w-auto gap-3">
-          <input 
-            value={bpTopic} 
-            onChange={(e) => setBpTopic(e.target.value)} 
-            placeholder="Trend topic..." 
-            className="bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-2.5 text-white outline-none focus:border-blue-500 transition-all text-xs sm:text-sm"
-          />
-          <button 
-            onClick={handleFetchBP} 
-            disabled={isBpLoading} 
-            className="w-full md:w-auto flex items-center justify-center gap-2.5 bg-cyan-600 hover:bg-cyan-700 px-6 py-3.5 sm:px-8 rounded-xl sm:rounded-2xl font-bold text-white shadow-xl active:scale-95 transition-all"
-          >
-            {isBpLoading ? <RefreshCw className="animate-spin" size={18} /> : <Search size={18} />} Sync Global Data
-          </button>
-        </div>
-      </div>
-
-      <div className="bg-[#1b2537] rounded-[1.5rem] sm:rounded-[2.5rem] border border-slate-700/50 overflow-hidden shadow-xl min-h-[300px] flex-1">
-        {bpContent && bpContent.text ? (
-          <div className="p-5 sm:p-10">
-            <div className="flex justify-between items-center mb-6 sm:mb-8 border-b border-slate-800 pb-4 sm:pb-6">
-               <h3 className="text-xs sm:text-xl font-bold text-cyan-400 uppercase tracking-widest flex items-center gap-2"><ShieldCheck size={20} /> Tactical Intelligence</h3>
-               <ShareButton content={bpContent.text} title="Global Security Trends" />
             </div>
-            <MarkdownRenderer content={bpContent.text} />
-            {bpContent.sources && bpContent.sources.length > 0 && (
-              <div className="mt-8 sm:mt-12 pt-6 sm:pt-10 border-t border-slate-800">
-                <h4 className="text-[10px] sm:text-xs font-black text-slate-500 uppercase tracking-widest mb-4 sm:mb-6 flex items-center gap-2"><Database size={14} /> Verified Intel Sources</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {bpContent.sources.map((s, i) => (
-                    <a key={i} href={s.url} target="_blank" rel="noopener noreferrer" className="flex items-center justify-between gap-3 bg-slate-900/50 hover:bg-slate-800 px-4 py-3 rounded-xl border border-slate-800 text-[10px] sm:text-xs font-bold text-blue-400 transition-all group">
-                      <span className="truncate flex-1">{s.title || 'Intelligence Document'}</span>
-                      <ExternalLink size={14} className="shrink-0 opacity-40 group-hover:opacity-100 transition-opacity" />
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center py-16 sm:py-24 opacity-20 gap-4 sm:gap-6 text-center px-10">
-            {isBpLoading ? (
-              <div className="flex flex-col items-center gap-4">
-                <RefreshCw className="animate-spin text-cyan-500" size={50} />
-                <p className="text-xs sm:text-lg font-bold animate-pulse">Scanning Global Intelligence Vault...</p>
-              </div>
-            ) : (
-              <>
-                <Globe size={60} sm:size={100} />
-                <p className="text-xs sm:text-lg font-bold max-w-md">Global Intelligence Vault is on standby. Search for specific trends or sync for a broad industry scan.</p>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
-  const renderToolkit = () => {
-    const allTemplates = [...STATIC_TEMPLATES, ...customSops];
-    const filteredTemplates = allTemplates.filter(t => 
-      t.title.toLowerCase().includes(toolkitSearch.toLowerCase()) || 
-      t.description.toLowerCase().includes(toolkitSearch.toLowerCase())
-    );
-
-    return (
-      <div className="max-w-7xl mx-auto space-y-6 sm:space-y-10 animate-in fade-in pb-20">
-        <div className="flex flex-col sm:flex-row items-center justify-between bg-slate-800/40 p-5 sm:p-10 rounded-[1.5rem] sm:rounded-[3rem] border border-slate-700/50 gap-6">
-          <div className="text-center sm:text-left">
-            <h2 className="text-xl sm:text-4xl font-black text-white mb-2 tracking-tight">Ops Vault & Intelligence</h2>
-            <p className="text-slate-400 text-xs sm:text-lg">Tactical protocols and AI-driven audit logs.</p>
-          </div>
-          <div className="flex p-1.5 bg-slate-900/80 rounded-2xl border border-slate-800 w-full sm:w-auto">
-            <button onClick={() => setToolkitTab('TEMPLATES')} className={`flex-1 sm:px-8 py-3 rounded-xl font-bold text-xs sm:text-sm transition-all ${toolkitTab === 'TEMPLATES' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}>Templates</button>
-            <button onClick={() => setToolkitTab('AUDIT')} className={`flex-1 sm:px-8 py-3 rounded-xl font-bold text-xs sm:text-sm transition-all ${toolkitTab === 'AUDIT' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}>Audit & Risk</button>
-          </div>
-        </div>
-
-        {toolkitTab === 'TEMPLATES' ? (
-          <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row gap-4">
-              <div className="relative flex-1">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                <input value={toolkitSearch} onChange={(e) => setToolkitSearch(e.target.value)} placeholder="Search protocol bank..." className="w-full bg-slate-800/40 border border-slate-700 rounded-xl py-3.5 pl-12 pr-6 text-white outline-none focus:border-blue-500 transition-all text-xs sm:text-sm" />
-              </div>
-              <button onClick={() => setShowSopModal(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all text-xs sm:text-sm"><Plus size={18} /> Add Custom SOP</button>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredTemplates.map(t => (
-                <div key={t.id} className="bg-[#1b2537] p-6 sm:p-8 rounded-[1.5rem] border border-slate-700/40 flex flex-col hover:border-blue-500/50 transition-all group">
-                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-blue-500/10 text-blue-400 rounded-xl flex items-center justify-center mb-4 sm:mb-6"><Briefcase size={20} /></div>
-                  <h3 className="text-sm sm:text-lg font-black text-white mb-2 group-hover:text-blue-400 transition-colors">{t.title}</h3>
-                  <p className="text-slate-400 text-[10px] sm:text-sm mb-6 flex-1 leading-relaxed line-clamp-2">{t.description}</p>
-                  <div className="flex gap-2">
-                    <ShareButton content={t.content} title={t.title} triggerClassName="flex-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest flex items-center justify-center gap-2 transition-all" />
-                    <button onClick={() => { navigator.clipboard.writeText(t.content); }} className="p-3 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white transition-all"><Copy size={16} /></button>
-                  </div>
-                </div>
-              ))}
+            <div className="text-center space-y-2">
+              <p className="text-white font-black text-xl uppercase tracking-tighter">Fast-Sync Active</p>
+              <p className="text-slate-500 text-[10px] uppercase tracking-[0.3em] font-black">NSCDC • NIMASA • ISO 18788 • ASIS</p>
             </div>
           </div>
-        ) : (
-          <div className="flex flex-col lg:grid lg:grid-cols-12 gap-8">
-            <div className="lg:col-span-8 space-y-6">
-              <div className="bg-[#1b2537] rounded-[1.5rem] sm:rounded-[2.5rem] border border-slate-700/50 overflow-hidden shadow-2xl flex flex-col">
-                <div className="p-4 sm:p-6 bg-slate-900/60 border-b border-slate-700/50 flex justify-between items-center">
-                  <div className="flex gap-1">
-                    {['DAILY', 'PATROL', 'INCIDENT'].map(tab => (
-                      <button key={tab} onClick={() => setAnalyzerTab(tab as any)} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${analyzerTab === tab ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>{tab}</button>
-                    ))}
+        ) : bpContent?.text ? (
+          <div className="flex-1 flex flex-col">
+            <div className="p-6 sm:p-10 space-y-8">
+               <div className="flex items-center gap-2 text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-800/50 pb-4">
+                 <ShieldCheck size={14} className="text-emerald-500" /> Authenticated Intelligence Briefing
+               </div>
+               
+               <div className="space-y-10">
+                  <div className="bg-slate-900/30 p-6 rounded-2xl border border-slate-800/50">
+                    <MarkdownRenderer content={bpContent.text} />
                   </div>
-                  <button onClick={() => auditFileInputRef.current?.click()} className="p-2 text-slate-400 hover:text-white transition-all"><FileUp size={18} /></button>
-                  <input type="file" ref={auditFileInputRef} className="hidden" accept=".txt,.pdf" onChange={handleAuditFileUpload} />
-                </div>
-                <div className="p-6 sm:p-8 space-y-6">
-                  <div className="space-y-2">
-                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Report Narrative</label>
-                    <textarea value={reportText} onChange={(e) => setReportText(e.target.value)} placeholder="Paste daily log or incident details..." className="w-full h-48 sm:h-64 bg-slate-900/40 border border-slate-700 rounded-2xl p-4 sm:p-6 text-slate-300 outline-none focus:border-blue-500 transition-all text-xs sm:text-sm resize-none" />
-                  </div>
-                  <button onClick={handleAnalyzeReport} disabled={isAnalyzing || !reportText} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg active:scale-[0.98] transition-all disabled:opacity-50">
-                    {isAnalyzing ? <RefreshCw size={20} className="animate-spin" /> : <ShieldCheck size={20} />} Run AI Audit
-                  </button>
-                </div>
-                {analysisResult && (
-                  <div className="p-6 sm:p-10 border-t border-slate-700/50 bg-slate-900/20 animate-in slide-in-from-bottom-6 duration-700">
-                    <div className="flex justify-between items-center mb-6"><h4 className="text-xs sm:text-lg font-bold text-white flex items-center gap-2.5"><Activity className="text-red-500" size={18} /> Vulnerability Intelligence</h4><ShareButton content={analysisResult} title="AI Audit Brief" /></div>
-                    <MarkdownRenderer content={analysisResult} />
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="lg:col-span-4 space-y-6">
-              <div className="bg-[#1b2537] p-6 sm:p-8 rounded-[1.5rem] border border-slate-700/50 shadow-xl">
-                <h4 className="text-[10px] sm:text-xs font-black text-slate-500 uppercase tracking-[0.2em] mb-6 flex items-center gap-2"><BarChart2 size={14} /> Intelligence Overview</h4>
-                <IncidentChart reports={storedReports} />
-                <div className="space-y-3 mt-6">
-                  <div className="flex justify-between items-center p-3 bg-slate-900/40 rounded-xl border border-slate-800/60"><span className="text-[10px] font-bold text-slate-400">Total Scans</span><span className="text-xs font-black text-white">{storedReports.length}</span></div>
-                  <div className="flex justify-between items-center p-3 bg-slate-900/40 rounded-xl border border-slate-800/60"><span className="text-[10px] font-bold text-slate-400">Anomalies Detected</span><span className="text-xs font-black text-red-400">LOCKED</span></div>
-                </div>
-              </div>
-              <div className="bg-[#1b2537] rounded-[1.5rem] border border-slate-700/50 shadow-xl flex flex-col overflow-hidden flex-1">
-                <div className="p-4 bg-slate-900/60 border-b border-slate-700/50 text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><History size={14} /> History Bank</div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide max-h-[400px]">
-                  {storedReports.length === 0 ? (
-                    <div className="py-10 text-center opacity-20 italic text-[10px]">No archives found.</div>
-                  ) : (
-                    storedReports.map(report => (
-                      <button key={report.id} onClick={() => { setReportText(report.content); setAnalysisResult(report.analysis); }} className="w-full text-left p-4 rounded-xl border border-slate-800 hover:border-blue-500/50 bg-slate-900/20 transition-all group">
-                        <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex justify-between"><span>{report.dateStr}</span> <Eye size={10} className="opacity-0 group-hover:opacity-100" /></div>
-                        <div className="text-[10px] font-bold text-slate-300 truncate">{report.content}</div>
-                      </button>
-                    ))
+                  
+                  {bpContent.sources && bpContent.sources.length > 0 && (
+                    <div className="space-y-4 pt-6">
+                      <div className="flex items-center gap-2 text-[10px] font-black text-blue-400 uppercase tracking-widest">
+                        <Info size={14} /> Intelligence Sources (Verify Authority)
+                      </div>
+                      <div className="grid grid-cols-1 gap-3">
+                        {bpContent.sources.slice(0, 4).map((source, idx) => (
+                          <a 
+                            key={idx} 
+                            href={source.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-between p-4 rounded-xl bg-slate-900 border border-slate-800 hover:border-blue-500 hover:bg-blue-500/5 transition-all group"
+                          >
+                            <div className="flex items-center gap-4">
+                              <div className="w-8 h-8 bg-blue-600/10 rounded-lg flex items-center justify-center text-blue-400 text-xs font-black group-hover:bg-blue-600 group-hover:text-white transition-colors">{idx + 1}</div>
+                              <div className="flex flex-col">
+                                <span className="text-xs font-bold text-slate-200 truncate max-w-[280px] group-hover:text-white">{source.title}</span>
+                                <span className="text-[9px] text-slate-500 font-medium truncate max-w-[200px]">{new URL(source.url).hostname}</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 text-blue-400 text-[10px] font-black uppercase tracking-widest bg-blue-400/10 px-3 py-1.5 rounded-lg group-hover:bg-blue-600 group-hover:text-white transition-all">
+                              Read Policy <ExternalLink size={12} />
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    </div>
                   )}
-                </div>
-              </div>
+               </div>
             </div>
           </div>
-        )}
-
-        {/* SOP Modal */}
-        {showSopModal && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[150] flex items-center justify-center p-4 animate-in fade-in duration-300">
-            <div className="bg-[#0a1222] w-full max-w-2xl rounded-[2rem] border border-slate-800 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
-              <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
-                <h3 className="font-bold text-white text-lg flex items-center gap-3"><Plus className="text-blue-500" /> Custom Intelligence Protocol</h3>
-                <button onClick={() => setShowSopModal(false)} className="text-slate-500 hover:text-white transition-colors"><X size={24} /></button>
-              </div>
-              <div className="p-6 sm:p-10 space-y-6">
-                <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Title</label>
-                  <input value={newSopTitle} onChange={(e) => setNewSopTitle(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-blue-500 outline-none text-xs sm:text-sm" placeholder="e.g. Server Room Access SOP" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Brief Description</label>
-                  <input value={newSopDesc} onChange={(e) => setNewSopDesc(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-blue-500 outline-none text-xs sm:text-sm" placeholder="Purpose of this protocol..." />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Protocol Content</label>
-                  <textarea value={newSopContent} onChange={(e) => setNewSopContent(e.target.value)} className="w-full h-40 bg-slate-900 border border-slate-700 rounded-xl px-4 py-4 text-white focus:border-blue-500 outline-none text-xs sm:text-sm resize-none" placeholder="Step-by-step instructions..." />
-                </div>
-                <div className="flex gap-4">
-                  <button onClick={() => fileInputRef.current?.click()} className="flex-1 bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-300 py-3.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all"><Upload size={16} /> Import Text</button>
-                  <input type="file" ref={fileInputRef} className="hidden" accept=".txt" onChange={handleFileUpload} />
-                  <button onClick={handleAddCustomSop} disabled={!newSopTitle || !newSopContent} className="flex-[2] bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white py-3.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all"><Check size={18} /> Register Protocol</button>
-                </div>
-              </div>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center py-24 px-10 text-center space-y-6 opacity-30 group">
+            <div className="relative">
+              <Globe size={100} strokeWidth={1} className="group-hover:scale-110 transition-transform duration-700" />
+              <Zap className="absolute -top-2 -right-2 text-blue-500 group-hover:animate-bounce" size={40} />
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-white font-black text-2xl uppercase tracking-tighter">Regulatory Intelligence Standby</h3>
+              <p className="text-slate-400 text-sm max-w-sm">Tap 'Sync' to pull latest physical security company regulatory standards from NSCDC, NIMASA, and ISO.</p>
             </div>
           </div>
         )}
       </div>
-    );
+    </div>
+  );
+
+  const setView = (view: View) => {
+    setCurrentView(view);
   };
 
-  // --- Main Render ---
-
-  if (appState === 'SPLASH') return <div className="fixed inset-0 bg-[#0a0f1a] flex flex-col items-center justify-center p-6 z-[100]"><AntiRiskLogo className="w-20 h-20 sm:w-32 sm:h-32 mb-8 sm:mb-12 animate-pulse" light={true} /><div className="w-full max-w-[240px] sm:max-w-xs space-y-4 sm:space-y-6 text-center"><div className="h-1 bg-slate-800 rounded-full overflow-hidden"><div className="h-full bg-blue-600 shadow-[0_0_15px_#2563eb] transition-all" style={{ width: `${splashProgress}%` }}></div></div><p className="text-[7px] sm:text-[10px] font-black text-blue-400 tracking-[0.4em] uppercase">Syncing Vault...</p></div></div>;
-  if (appState === 'PIN_ENTRY' || appState === 'PIN_SETUP') return <div className="fixed inset-0 bg-[#0a0f1a] flex flex-col items-center justify-center p-5 z-[100]"><AntiRiskLogo className="w-14 h-14 sm:w-20 sm:h-20 mb-6 sm:mb-8" /><h2 className="text-lg sm:text-2xl font-bold text-white mb-4 tracking-tight">{appState === 'PIN_SETUP' ? 'Setup Vault PIN' : 'Access Vault'}</h2><div className="flex gap-3.5 sm:gap-5 mb-6 sm:mb-8">{[...Array(4)].map((_, i) => <div key={i} className={`w-2.5 h-2.5 sm:w-4 sm:h-4 rounded-full border-2 transition-all ${pinInput.length > i ? (isPinError ? 'bg-red-500 border-red-500' : 'bg-blue-500 border-blue-500 shadow-[0_0_10px_#3b82f6]') : 'border-slate-800'}`} />)}</div><div className="grid grid-cols-3 gap-2.5 sm:gap-5 w-full max-w-[250px] sm:max-w-xs mb-8 sm:mb-10">{[1,2,3,4,5,6,7,8,9,0].map(num => <button key={num} onClick={() => handlePinDigit(num.toString())} className="aspect-square bg-slate-800/30 border border-slate-700/50 rounded-lg sm:rounded-2xl text-lg sm:text-2xl font-bold text-white active:scale-90 transition-all shadow-inner hover:bg-slate-800/60 flex items-center justify-center">{num}</button>)}<button onClick={() => setPinInput('')} className="aspect-square bg-slate-800/30 border border-slate-700/50 rounded-lg sm:rounded-2xl flex items-center justify-center text-red-500"><Trash2 size={18} className="sm:size-20" /></button></div></div>;
+  if (appState === 'SPLASH') return <div className="fixed inset-0 bg-[#0a0f1a] flex flex-col items-center justify-center p-6 z-[100]"><AntiRiskLogo className="w-16 h-16 mb-8 animate-pulse" light={true} /><div className="w-full max-w-[200px] space-y-4 text-center"><div className="h-1 bg-slate-800 rounded-full overflow-hidden"><div className="h-full bg-blue-600 shadow-[0_0_10px_#2563eb] transition-all" style={{ width: `${splashProgress}%` }}></div></div><p className="text-[6px] font-black text-blue-400 tracking-[0.4em] uppercase">Syncing AntiRisk Vault...</p></div></div>;
+  if (appState === 'PIN_ENTRY' || appState === 'PIN_SETUP') return <div className="fixed inset-0 bg-[#0a0f1a] flex flex-col items-center justify-center p-6 z-[100]"><AntiRiskLogo className="w-12 h-12 mb-8" /><h2 className="text-base sm:text-2xl font-bold text-white mb-6 uppercase tracking-widest">{appState === 'PIN_SETUP' ? 'Setup Vault' : 'Secure Entry'}</h2><div className="flex gap-4 mb-10">{[...Array(4)].map((_, i) => <div key={i} className={`w-3.5 h-3.5 rounded-full border-2 transition-all ${pinInput.length > i ? (isPinError ? 'bg-red-500 border-red-500' : 'bg-blue-500 border-blue-500 shadow-[0_0_10px_#3b82f6]') : 'border-slate-800'}`} />)}</div><div className="grid grid-cols-3 gap-4 w-full max-w-[250px]">{[1,2,3,4,5,6,7,8,9,0].map(num => <button key={num} onClick={() => handlePinDigit(num.toString())} className="aspect-square bg-slate-800/30 border border-slate-700/50 rounded-xl text-lg font-bold text-white active:scale-90 transition-all flex items-center justify-center shadow-inner">{num}</button>)}<button onClick={() => setPinInput('')} className="aspect-square bg-slate-800/30 border border-slate-700/50 rounded-xl flex items-center justify-center text-red-500 active:scale-90"><Trash2 size={20} /></button></div></div>;
 
   return (
-    <div className="flex min-h-screen bg-[#0a0f1a] text-slate-100 overflow-hidden">
-      <Navigation currentView={currentView} setView={setCurrentView} isMobileMenuOpen={isMobileMenuOpen} closeMobileMenu={() => setIsMobileMenuOpen(false)} onOpenSettings={() => setShowSettings(true)} />
-      <main className="flex-1 flex flex-col h-screen overflow-hidden relative w-full">
-        <div className="lg:hidden p-3.5 border-b border-slate-800/40 flex justify-between items-center bg-[#0a0f1a]/95 backdrop-blur-md z-20 sticky top-0">
-          <div className="flex items-center gap-2 sm:gap-3" onClick={() => setCurrentView(View.DASHBOARD)}><AntiRiskLogo className="w-7 h-7 sm:w-8 sm:h-8" /><h1 className="font-bold text-base sm:text-xl text-white">AntiRisk</h1></div>
-          <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 text-white bg-slate-800/50 rounded-lg active:scale-95 transition-transform"><Menu size={20} className="sm:size-24" /></button>
+    <div className="flex h-[100dvh] bg-[#0a0f1a] text-slate-100 overflow-hidden relative">
+      <Navigation currentView={currentView} setView={setView} isMobileMenuOpen={isMobileMenuOpen} closeMobileMenu={() => setIsMobileMenuOpen(false)} onOpenSettings={() => setShowSettings(true)} />
+      <main className="flex-1 flex flex-col min-h-0 overflow-hidden relative w-full">
+        <div className="lg:hidden h-14 border-b border-slate-800/40 flex justify-between items-center px-4 bg-[#0a1222]/95 backdrop-blur-md z-30 shrink-0">
+          <div className="flex items-center gap-2.5" onClick={() => setView(View.DASHBOARD)}>
+            <AntiRiskLogo className="w-7 h-7" />
+            <h1 className="font-bold text-sm text-white uppercase tracking-widest">AntiRisk</h1>
+          </div>
+          <button onClick={() => setIsMobileMenuOpen(true)} className="p-2.5 text-white bg-slate-800/50 rounded-lg active:scale-90"><Menu size={18} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 sm:p-8 lg:p-12 scrollbar-hide pb-28 lg:pb-12">
-          {apiError && <div className="max-w-4xl mx-auto mb-5 bg-red-500/10 border border-red-500/30 rounded-xl p-3.5 flex items-center justify-between gap-3 animate-in slide-in-from-top-4 duration-300"><div className="flex items-center gap-2.5"><ShieldAlert className="text-red-500 shrink-0" size={18} /><p className="text-red-200 font-bold text-[10px] sm:text-xs">{apiError}</p></div><button onClick={() => setApiError(null)} className="text-slate-500 hover:text-white transition-colors"><X size={16}/></button></div>}
+        
+        <div className="flex-1 overflow-y-auto p-4 sm:p-8 lg:p-12 scrollbar-hide pb-20 lg:pb-12">
+          {apiError && <div className="max-w-4xl mx-auto mb-4 bg-red-500/10 border border-red-500/30 rounded-xl p-3 flex items-center justify-between"><div className="flex items-center gap-2"><ShieldAlert className="text-red-500" size={14} /><p className="text-red-200 font-bold text-[9px] sm:text-xs">{apiError}</p></div><button onClick={() => setApiError(null)} className="p-1"><X size={14}/></button></div>}
           
           {currentView === View.DASHBOARD && renderDashboard()}
-          {currentView === View.TRAINING && renderTrainingView()}
+          {currentView === View.WEEKLY_TIPS && renderWeeklyTipsView()}
           {currentView === View.ADVISOR && renderAdvisor()}
-          {currentView === View.BEST_PRACTICES && renderBestPractices()}
-          {currentView === View.TOOLKIT && renderToolkit()}
-          
-          {currentView === View.NEWS_BLOG && (
-            <div className="flex flex-col max-w-5xl mx-auto w-full space-y-5 sm:space-y-8 animate-in fade-in">
-              <div className="bg-[#1b2537] p-5 sm:p-10 rounded-[1.5rem] sm:rounded-[2.5rem] border border-slate-700/50 shadow-lg flex flex-col md:flex-row justify-between items-center gap-5 sm:gap-6">
-                <div className="flex-1 space-y-1.5 sm:space-y-2 text-center md:text-left">
-                  <h2 className="text-lg sm:text-3xl font-black text-white flex items-center justify-center md:justify-start gap-3.5"><Newspaper className="text-blue-400" size={24} sm:size={28} /> News Blog</h2>
-                  <p className="text-slate-400 text-xs sm:text-lg font-medium">Daily briefings from NSCDC & NIMASA.</p>
-                </div>
-                <button onClick={handleLoadNews} disabled={isNewsLoading} className="w-full md:w-auto flex items-center justify-center gap-2.5 bg-blue-600 hover:bg-blue-700 px-5 py-3 sm:px-8 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-white shadow-xl active:scale-95 transition-all">
-                  {isNewsLoading ? <RefreshCw className="animate-spin" size={18} /> : <RefreshCw size={18} />} Sync Intel
-                </button>
-              </div>
-              <div className="bg-[#1b2537] rounded-[1.5rem] sm:rounded-[2.5rem] border border-slate-700/50 overflow-hidden shadow-xl min-h-[250px] sm:min-h-[300px]">
-                {newsBlog ? <div className="p-5 sm:p-10"><MarkdownRenderer content={newsBlog.text} /></div> : <div className="flex-1 flex flex-col items-center justify-center py-16 sm:py-20 opacity-20 gap-3"><Target size={60} sm:size={80} /><p className="text-xs sm:text-lg font-bold">Brief inactive. Sync to start.</p></div>}
-              </div>
+          {currentView === View.BEST_PRACTICES && renderBestPracticesView()}
+          {currentView === View.TRAINING && (
+            <div className="max-w-7xl mx-auto space-y-5 animate-in fade-in duration-300">
+               <div className="flex justify-between items-center mb-4">
+                  <div className="flex items-center gap-3">
+                    <BookOpen size={24} className="text-blue-400" />
+                    <h2 className="text-xl font-bold">Training Builder</h2>
+                  </div>
+                  <button onClick={() => setView(View.DASHBOARD)} className="p-2 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-all"><X size={20} /></button>
+               </div>
+               <div className="grid lg:grid-cols-12 gap-5 h-full">
+                  <div className="lg:col-span-4 space-y-4">
+                      <div className="bg-[#1b2537] p-5 rounded-xl border border-slate-700/50 shadow-lg">
+                        <h3 className="text-sm font-bold text-white mb-4">Briefing Config</h3>
+                        <input value={trainingTopic} onChange={(e) => setTrainingTopic(e.target.value)} placeholder="Topic Search..." className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-xs mb-3 text-white outline-none focus:border-blue-500" />
+                        <div className="grid grid-cols-2 gap-2 mb-4">
+                          <select value={trainingRole} onChange={(e) => setTrainingRole(e.target.value as SecurityRole)} className="bg-slate-900 border border-slate-700 rounded-lg text-[10px] p-2 text-slate-300">
+                            {Object.values(SecurityRole).map(r => <option key={r} value={r}>{r}</option>)}
+                          </select>
+                          <select value={trainingWeek} onChange={(e) => setTrainingWeek(Number(e.target.value))} className="bg-slate-900 border border-slate-700 rounded-lg text-[10px] p-2 text-slate-300">
+                            {[1,2,3,4].map(w => <option key={w} value={w}>Week {w}</option>)}
+                          </select>
+                        </div>
+                        <button onClick={handleGenerateTraining} disabled={isTrainingLoading || !trainingTopic} className="w-full bg-blue-600 text-white py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                          {isTrainingLoading ? <RefreshCw className="animate-spin" size={14} /> : <Zap size={14} />} Generate Briefing
+                        </button>
+                      </div>
+                      <div className="bg-[#1b2537] rounded-xl border border-slate-700/50 overflow-hidden hidden lg:flex flex-col h-64">
+                        <div className="bg-slate-900 p-2 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-slate-800">Archive</div>
+                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                          {savedTraining.map(t => (
+                            <button key={t.id} onClick={() => handleSelectSavedTraining(t)} className={`w-full text-left p-2 rounded-lg text-[10px] border ${activeTrainingId === t.id ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800 hover:bg-slate-800'}`}>{t.topic}</button>
+                          ))}
+                        </div>
+                      </div>
+                  </div>
+                  <div className="lg:col-span-8 bg-[#1b2537] rounded-xl border border-slate-700/50 p-5 shadow-2xl min-h-[400px]">
+                      {trainingContent ? (
+                        <div className="space-y-4">
+                           <div className="flex justify-end">
+                              <ShareButton title={trainingTopic} content={trainingContent} view={View.TRAINING} />
+                           </div>
+                           <MarkdownRenderer content={trainingContent} />
+                        </div>
+                      ) : <div className="h-full flex flex-col items-center justify-center opacity-20"><Target size={40} /><p className="text-sm mt-2">Generate briefing above.</p></div>}
+                  </div>
+               </div>
+            </div>
+          )}
+          {currentView === View.TOOLKIT && (
+            <div className="max-w-7xl mx-auto space-y-5 animate-in fade-in duration-300">
+               <div className="flex justify-between items-center mb-4">
+                  <div className="flex items-center gap-3">
+                    <Briefcase size={24} className="text-blue-400" />
+                    <h2 className="text-xl font-bold">Operations Toolkit</h2>
+                  </div>
+                  <button onClick={() => setView(View.DASHBOARD)} className="p-2 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-all"><X size={20} /></button>
+               </div>
+               <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800 w-fit mx-auto sm:mx-0">
+                  <button onClick={() => setToolkitTab('TEMPLATES')} className={`px-5 py-1.5 rounded-lg text-xs font-bold transition-all ${toolkitTab === 'TEMPLATES' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>SOP Templates</button>
+                  <button onClick={() => setToolkitTab('AUDIT')} className={`px-5 py-1.5 rounded-lg text-xs font-bold transition-all ${toolkitTab === 'AUDIT' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>AI Audit</button>
+               </div>
+               {toolkitTab === 'TEMPLATES' ? (
+                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {[...STATIC_TEMPLATES, ...customSops].map(t => (
+                      <div key={t.id} className="bg-[#1b2537] p-4 rounded-xl border border-slate-700/50 flex flex-col h-full group">
+                        <h4 className="text-[11px] font-bold text-white mb-2 truncate">{t.title}</h4>
+                        <p className="text-[10px] text-slate-500 mb-4 flex-1 line-clamp-2">{t.description}</p>
+                        <button onClick={() => navigator.clipboard.writeText(t.content)} className="w-full bg-slate-900 p-2 rounded-lg text-[10px] font-bold text-slate-400 group-hover:text-blue-400 border border-slate-800 flex items-center justify-center gap-1.5"><Copy size={12} /> COPY SOP</button>
+                      </div>
+                    ))}
+                    <button onClick={() => setShowSopModal(true)} className="bg-slate-900/30 border border-dashed border-slate-700 p-4 rounded-xl flex flex-col items-center justify-center opacity-50 hover:opacity-100 transition-opacity min-h-[120px]"><Plus size={20}/><span className="text-[10px] mt-1 font-bold">New Custom SOP</span></button>
+                 </div>
+               ) : (
+                 <div className="grid lg:grid-cols-12 gap-5">
+                    <div className="lg:col-span-8 bg-[#1b2537] p-5 rounded-xl border border-slate-700/50 shadow-lg space-y-4">
+                      <textarea value={reportText} onChange={(e) => setReportText(e.target.value)} placeholder="Paste daily report logs here..." className="w-full h-48 bg-slate-900 border border-slate-700 rounded-xl p-4 text-xs text-white outline-none focus:border-blue-500 resize-none" />
+                      <button onClick={handleAnalyzeReport} disabled={isAnalyzing || !reportText} className="w-full bg-blue-600 py-3 rounded-xl text-xs font-black uppercase tracking-widest flex items-center justify-center gap-3">
+                        {isAnalyzing ? <RefreshCw className="animate-spin" size={16} /> : <ShieldCheck size={16} />} Run Liability Audit
+                      </button>
+                      {analysisResult && <div className="mt-4 p-4 bg-slate-900/40 rounded-xl border border-slate-800"><MarkdownRenderer content={analysisResult} /></div>}
+                    </div>
+                    <div className="lg:col-span-4 space-y-4">
+                       <div className="bg-[#1b2537] p-5 rounded-xl border border-slate-700/50 shadow-xl">
+                          <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">Risk Trends</h4>
+                          <IncidentChart reports={storedReports} />
+                       </div>
+                       <div className="bg-[#1b2537] rounded-xl border border-slate-700/50 overflow-hidden h-48">
+                          <div className="bg-slate-900 p-2 text-[10px] font-black uppercase text-slate-600">Audit History</div>
+                          <div className="p-2 space-y-1 overflow-y-auto h-36">
+                             {storedReports.map(r => <button key={r.id} onClick={() => {setReportText(r.content); setAnalysisResult(r.analysis);}} className="w-full text-left p-2 rounded bg-slate-800/50 text-[9px] text-slate-400 truncate border border-slate-800">{r.dateStr}: {r.content}</button>)}
+                          </div>
+                       </div>
+                    </div>
+                 </div>
+               )}
             </div>
           )}
           
-          {currentView === View.WEEKLY_TIPS && (
-             <div className="max-w-4xl mx-auto space-y-5 h-full flex flex-col">
-               <div className="flex flex-col sm:flex-row justify-between items-center bg-slate-800/40 p-5 sm:p-8 rounded-[1.5rem] sm:rounded-[3rem] border border-slate-700/50 shadow-xl gap-5">
-                 <div className="text-center sm:text-left"><h2 className="text-lg sm:text-3xl font-black text-white mb-0.5 sm:mb-1">Directives</h2><p className="text-slate-400 text-[10px] sm:text-sm font-medium">Strategic briefings.</p></div>
-                 <button onClick={handleGenerateWeeklyTip} disabled={isTipLoading} className="w-full sm:w-auto bg-yellow-600 hover:bg-yellow-700 px-5 py-3 rounded-xl sm:rounded-2xl font-bold text-white shadow-xl flex items-center justify-center gap-2.5 transition-all active:scale-95"><Plus size={18}/> New Directive</button>
-               </div>
-               <div className="flex-1 overflow-y-auto bg-slate-800/40 rounded-[1.5rem] sm:rounded-[3rem] border border-slate-700/50 shadow-inner scrollbar-hide flex flex-col min-h-[300px]">
-                 {weeklyTips[0] ? (
-                    <div className="flex-1 flex flex-col">
-                      <div className="p-3.5 sm:p-6 bg-slate-900/40 border-b border-slate-700/50 flex justify-between items-center sticky top-0 z-10">
-                        <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-2.5"><Lightbulb className="text-yellow-400" size={18} /> Strategic Focus</h3>
-                        <ShareButton 
-                          content={weeklyTips[0].content} 
-                          title={weeklyTips[0].topic} 
-                          view={View.WEEKLY_TIPS} 
-                          id={weeklyTips[0].id} 
-                        />
-                      </div>
-                      <div className="p-5 sm:p-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                        <MarkdownRenderer content={weeklyTips[0].content} />
-                      </div>
-                    </div>
-                 ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-700 opacity-20 text-center gap-4 sm:gap-6 py-20 sm:py-24">
-                      <Lightbulb size={80} sm:size={100} />
-                      <p className="text-sm sm:text-lg font-bold">No directives in vault.</p>
-                    </div>
-                 )}
-               </div>
-             </div>
+          {currentView === View.NEWS_BLOG && (
+            <div className="max-w-4xl mx-auto space-y-5 animate-in fade-in duration-300">
+              <div className="bg-[#1b2537] p-5 rounded-xl border border-slate-700/50 flex justify-between items-center shadow-lg">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
+                    <Newspaper size={20} />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold">Security Briefing</h2>
+                    <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Industry Pulse</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={handleLoadNews} disabled={isNewsLoading} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-all active:scale-95">
+                    {isNewsLoading ? <RefreshCw className="animate-spin" size={14} /> : <RefreshCw size={14} />} Refresh
+                  </button>
+                  <button onClick={() => setView(View.DASHBOARD)} className="p-2 bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-all"><X size={20} /></button>
+                </div>
+              </div>
+              <div className="bg-[#1b2537] p-6 rounded-xl border border-slate-700/50 shadow-xl min-h-[300px]">
+                 {newsBlog ? <MarkdownRenderer content={newsBlog.text} /> : <div className="h-full py-20 text-center opacity-20"><Newspaper size={40} className="mx-auto" /></div>}
+              </div>
+            </div>
           )}
         </div>
       </main>
-      
-      {/* CEO Settings Modal */}
+
       {showSettings && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-[#0a1222] w-full max-w-lg rounded-[2.5rem] border border-slate-800 shadow-2xl overflow-hidden animate-in zoom-in-95">
-             <div className="p-8 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
-                <h3 className="font-black text-white text-xl flex items-center gap-3"><User className="text-blue-500" /> Executive Profile</h3>
-                <button onClick={() => setShowSettings(false)} className="text-slate-500 hover:text-white"><X size={24} /></button>
-             </div>
-             <div className="p-8 sm:p-10 space-y-6">
-                <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Full Name</label>
-                  <input value={userProfile.name} onChange={(e) => setUserProfile({...userProfile, name: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-blue-500 outline-none text-sm" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">WhatsApp Number</label>
-                  <input value={userProfile.phoneNumber} onChange={(e) => setUserProfile({...userProfile, phoneNumber: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-blue-500 outline-none text-sm" placeholder="+234..." />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Communication Channel</label>
-                  <div className="flex gap-2">
-                    {['WhatsApp', 'Email'].map(channel => (
-                      <button key={channel} onClick={() => setUserProfile({...userProfile, preferredChannel: channel as any})} className={`flex-1 py-3 rounded-xl font-bold text-xs transition-all ${userProfile.preferredChannel === channel ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-900 text-slate-500 border border-slate-800'}`}>{channel}</button>
-                    ))}
-                  </div>
-                </div>
-                <button onClick={() => setShowSettings(false)} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-black shadow-lg transition-all active:scale-95">Update Identity</button>
-             </div>
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+          <div className="bg-[#0a1222] w-full max-w-md rounded-2xl border border-slate-800 p-6 space-y-5 shadow-2xl">
+            <h3 className="font-black text-white text-sm flex justify-between uppercase tracking-widest">CEO Profile <button onClick={() => setShowSettings(false)} className="text-slate-600 hover:text-white"><X size={20}/></button></h3>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[9px] font-black text-slate-500 uppercase">Executive Name</label>
+                <input value={userProfile.name} onChange={(e) => setUserProfile({...userProfile, name: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-xs outline-none focus:border-blue-500" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[9px] font-black text-slate-500 uppercase">WhatsApp Number</label>
+                <input value={userProfile.phoneNumber} onChange={(e) => setUserProfile({...userProfile, phoneNumber: e.target.value})} placeholder="+234..." className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-xs outline-none focus:border-blue-500" />
+              </div>
+              <button onClick={() => setShowSettings(false)} className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-black text-xs">Sync Identity</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSopModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+          <div className="bg-[#0a1222] w-full max-w-md rounded-2xl border border-slate-800 p-6 space-y-5 shadow-2xl">
+            <h3 className="font-black text-white text-sm flex justify-between uppercase tracking-widest">New Custom Protocol <button onClick={() => setShowSopModal(false)} className="text-slate-600 hover:text-white"><X size={20}/></button></h3>
+            <input value={newSopTitle} onChange={(e) => setNewSopTitle(e.target.value)} placeholder="Protocol Title..." className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white outline-none text-xs" />
+            <textarea value={newSopContent} onChange={(e) => setNewSopContent(e.target.value)} placeholder="Full procedure details..." className="w-full h-32 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white outline-none resize-none text-xs" />
+            <button onClick={handleAddCustomSop} disabled={!newSopTitle || !newSopContent} className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold text-xs">Register SOP</button>
           </div>
         </div>
       )}

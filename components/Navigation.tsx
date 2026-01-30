@@ -41,7 +41,7 @@ const Navigation: React.FC<NavigationProps> = ({
     { id: View.TOOLKIT, label: 'Ops Vault', icon: Briefcase },
   ];
 
-  const baseClasses = "fixed inset-y-0 left-0 z-[100] w-[85vw] sm:w-72 bg-[#0a0f1a] border-r border-slate-800/40 transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 shadow-2xl lg:shadow-none";
+  const baseClasses = "fixed inset-y-0 left-0 z-[100] w-[80vw] sm:w-72 bg-[#0a0f1a] border-r border-slate-800/40 transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 shadow-2xl lg:shadow-none";
   const mobileClasses = isMobileMenuOpen ? "translate-x-0" : "-translate-x-full";
 
   return (
@@ -49,18 +49,18 @@ const Navigation: React.FC<NavigationProps> = ({
       {/* Mobile Overlay */}
       {isMobileMenuOpen && (
         <div 
-          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[90] lg:hidden animate-in fade-in duration-300"
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[90] lg:hidden animate-in fade-in duration-300"
           onClick={closeMobileMenu}
         />
       )}
 
       <div className={`${baseClasses} ${mobileClasses}`}>
         <div className="h-full flex flex-col">
-          <div className="p-4 sm:p-8 border-b border-slate-800/40 flex justify-between items-center">
+          <div className="p-5 sm:p-8 border-b border-slate-800/40 flex justify-between items-center">
             <div className="flex items-center gap-3 sm:gap-4">
-              <AntiRiskLogo className="w-7 h-7 sm:w-10 sm:h-10" />
+              <AntiRiskLogo className="w-8 h-8 sm:w-10 sm:h-10" />
               <div>
-                <h1 className="font-bold text-base sm:text-2xl text-white leading-tight tracking-tight">AntiRisk</h1>
+                <h1 className="font-bold text-sm sm:text-2xl text-white leading-tight tracking-tight uppercase">AntiRisk</h1>
                 <p className="text-[6px] sm:text-[10px] text-red-500 font-black tracking-[0.2em] uppercase">MANAGEMENT</p>
               </div>
             </div>
@@ -72,7 +72,7 @@ const Navigation: React.FC<NavigationProps> = ({
             </button>
           </div>
 
-          <nav className="flex-1 py-4 px-2 sm:py-6 sm:px-4 space-y-0.5 sm:space-y-1 overflow-y-auto scrollbar-hide">
+          <nav className="flex-1 py-4 px-2.5 sm:py-6 sm:px-4 space-y-1 overflow-y-auto scrollbar-hide">
             {navItems.map((item) => {
               const isActive = currentView === item.id;
               const Icon = item.icon;
@@ -83,18 +83,18 @@ const Navigation: React.FC<NavigationProps> = ({
                     setView(item.id);
                     closeMobileMenu();
                   }}
-                  className={`w-full flex items-center justify-between px-4 py-3 sm:px-6 sm:py-4 rounded-xl sm:rounded-2xl transition-all group active:scale-[0.97] ${
+                  className={`w-full flex items-center justify-between px-4 py-3 sm:px-6 sm:py-4 rounded-xl transition-all group active:scale-[0.98] ${
                     isActive 
                       ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/30' 
                       : 'text-slate-400 hover:bg-slate-900/50 hover:text-white'
                   }`}
                 >
                   <div className="flex items-center gap-3 sm:gap-5">
-                    <Icon className={`${isActive ? 'text-white' : 'text-slate-500 group-hover:text-blue-400'} w-4.5 h-4.5 sm:w-6 sm:h-6`} />
-                    <span className="font-bold text-sm sm:text-lg text-left truncate">{item.label}</span>
+                    <Icon className={`${isActive ? 'text-white' : 'text-slate-500 group-hover:text-blue-400'} w-5 h-5 sm:w-6 sm:h-6`} />
+                    <span className="font-bold text-xs sm:text-lg text-left truncate">{item.label}</span>
                   </div>
                   {item.id === View.BEST_PRACTICES && bestPracticesBadge > 0 && (
-                    <span className="bg-red-500 text-white text-[7px] sm:text-[8px] font-black px-1.5 py-0.5 rounded shadow-sm">
+                    <span className="bg-red-500 text-white text-[7px] font-black px-1.5 py-0.5 rounded shadow-sm">
                       {bestPracticesBadge}
                     </span>
                   )}
@@ -103,19 +103,19 @@ const Navigation: React.FC<NavigationProps> = ({
             })}
           </nav>
 
-          <div className="p-4 sm:p-8 border-t border-slate-800/40 space-y-3 sm:space-y-6">
+          <div className="p-5 sm:p-8 border-t border-slate-800/40 space-y-4 sm:space-y-6">
             <button 
               onClick={() => { onOpenSettings(); closeMobileMenu(); }}
-              className="w-full flex items-center gap-3.5 sm:gap-5 px-4 py-3 sm:px-6 sm:py-4 rounded-xl sm:rounded-2xl text-slate-400 hover:bg-slate-900/50 hover:text-white transition-all active:scale-[0.97]"
+              className="w-full flex items-center gap-3.5 sm:gap-5 px-4 py-3 sm:px-6 sm:py-4 rounded-xl text-slate-400 hover:bg-slate-900/50 hover:text-white transition-all active:scale-[0.98]"
             >
               <User className="text-blue-400 w-5 h-5 sm:w-6 sm:h-6" />
-              <span className="font-bold text-sm sm:text-lg">CEO Profile</span>
+              <span className="font-bold text-xs sm:text-lg">CEO Profile</span>
             </button>
-            <div className="bg-slate-900/30 rounded-xl sm:rounded-3xl p-3.5 sm:p-6 border border-slate-800/40">
-              <h4 className="text-[6px] sm:text-[9px] font-black text-slate-600 uppercase mb-2 sm:mb-3 tracking-[0.2em]">System Status</h4>
-              <div className="flex items-center gap-2 sm:gap-3">
+            <div className="bg-slate-900/30 rounded-2xl p-4 sm:p-6 border border-slate-800/40">
+              <h4 className="text-[7px] sm:text-[9px] font-black text-slate-600 uppercase mb-2 sm:mb-3 tracking-[0.2em]">System Status</h4>
+              <div className="flex items-center gap-2.5 sm:gap-3">
                 <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-green-500 animate-pulse"></span>
-                <span className="text-[8px] sm:text-[10px] font-bold text-slate-300 uppercase">Vault Active</span>
+                <span className="text-[8px] sm:text-[10px] font-bold text-slate-300 uppercase tracking-widest">Vault Active</span>
               </div>
             </div>
           </div>
